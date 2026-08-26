@@ -30,7 +30,7 @@ FFLAGS  ?= -O2 -g -std=legacy -ffixed-line-length-132 -cpp \
 # Free-form for our own .f90 sources; the -ffixed-line-length flag is harmless
 # there because gfortran picks form from the extension.
 
-HARNESSES := $(BUILD)/harness_hppm $(BUILD)/harness_vppm
+HARNESSES := $(BUILD)/harness_hppm $(BUILD)/harness_vppm $(BUILD)/harness_ppm_coeffs
 
 .PHONY: all clean
 all: $(HARNESSES)
@@ -58,6 +58,13 @@ $(BUILD)/harness_hppm: $(BUILD)/stubs.o $(BUILD)/hppm.o $(BUILD)/harness_hppm.o
 	$(FC) $(FFLAGS) $^ -o $@
 
 $(BUILD)/harness_vppm: $(BUILD)/stubs.o $(BUILD)/vppm.o $(BUILD)/harness_vppm.o
+	$(FC) $(FFLAGS) $^ -o $@
+
+# PPM lives in vppm.F alongside VPPM, so this links the same object.
+$(BUILD)/harness_ppm_coeffs.o: $(HARNESS)/harness_ppm_coeffs.f90 | $(BUILD)
+	$(FC) $(FFLAGS) -c $< -o $@
+
+$(BUILD)/harness_ppm_coeffs: $(BUILD)/stubs.o $(BUILD)/vppm.o $(BUILD)/harness_ppm_coeffs.o
 	$(FC) $(FFLAGS) $^ -o $@
 
 clean:

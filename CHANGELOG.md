@@ -39,6 +39,12 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   2.1e-7 relative (~1.7 float32 ULPs), with three cases bit-identical.
 - **A0.5** — `jax_enable_x64` is set on package import, since float64 is the
   documented working precision and forgetting the flag silently halves it.
+- **A0.6** — `cmaq_jax.ppm`: the non-uniform-spacing reconstruction
+  (`nonuniform_mesh`, `ppm_parabola_nonuniform`), porting `vppm.F:450-541`.
+  Mesh coefficients are precomputed from `ds`, mirroring the Fortran's `SAVE`.
+- **A0.6** — `reference/harness/harness_ppm_coeffs.f90` calls `vppm.F`'s inner
+  `PPM` subroutine directly, pinning the parabola independently of the velocity
+  adjustment. Adds 14 `coeffs_*` goldens (7 profiles x uniform/stretched grids).
 
 ### Changed
 

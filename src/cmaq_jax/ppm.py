@@ -28,9 +28,12 @@ from jax import Array
 from cmaq_jax.config import DEFAULT_PPM, PPMConstants
 
 __all__ = [
+    "NonUniformMesh",
     "Parabola",
+    "nonuniform_mesh",
     "ppm_advect_uniform",
     "ppm_flux_uniform",
+    "ppm_parabola_nonuniform",
     "ppm_parabola_uniform",
 ]
 
@@ -250,3 +253,128 @@ def ppm_advect_uniform(
     # Conservative update, eq. (1.13). hppm.F:444-445.
     delta = (fp[:-1] - fp[1:] + fm[1:] - fm[:-1]) / ds
     return con.at[swp : swp + ni].add(delta)
+
+
+class NonUniformMesh(NamedTuple):
+    """Mesh coefficients for PPM on a grid with varying cell width.
+
+    Ports the lattice arrays that ``vppm.F:450-468`` builds from ``DS`` and
+    ``SAVE``s. Saving them is correct upstream because CMAQ's layer thicknesses
+    are fixed sigma coordinates, constant in space and time; here they are
+    simply precomputed once by :func:`nonuniform_mesh`.
+
+    ``chi``/``psi`` weight the forward and backward differences in the eq. (1.7)
+    slope; ``lam``/``mu``/``nu`` weight the eq. (1.6) edge value. Each is stored
+    at full length with zeros outside the range the Fortran loop covers.
+    """
+
+    chi: Array
+    psi: Array
+    lam: Array
+    mu: Array
+    nu: Array
+    edge_lo: tuple[Array, Array]
+    """Weights on ``(cn[1], cn[0])`` for the second edge value, ``vppm.F:476``."""
+    edge_hi: tuple[Array, Array]
+    """Weights on ``(cn[-1], cn[-2])`` for the second-from-last, ``vppm.F:479``.
+
+    These stay 0-d arrays rather than Python floats so the whole mesh is a
+    valid pytree and survives ``jit`` without a host round-trip.
+    """
+
+
+def nonuniform_mesh(ds: Array) -> NonUniformMesh:
+    """Precompute the mesh coefficients for layer thicknesses ``ds``.
+
+    Ports ``vppm.F:450-468``. Pure geometry -- no field values -- so this runs
+    once when the grid is built, not per sweep.
+    """
+    thickness = jnp.asarray(ds)
+    n = thickness.shape[0]
+    if n < 4:
+        # vppm.F's interior loops run I = 2, NI-2; below four layers they are
+        # degenerate and CM is left partly unset.
+        raise ValueError(f"non-uniform PPM needs at least 4 layers, got {n}")
+
+    zeros = jnp.zeros(n, dtype=thickness.dtype)
+
+    # alpha_j = ds_j + ds_{j+1}, beta_j = ds_{j-1} + ds_j, for j in [1, n-2].
+    alpha = thickness[1:-1] + thickness[2:]
+    beta = thickness[:-2] + thickness[1:-1]
+    scale = thickness[1:-1] / (beta + thickness[2:])
+    chi = scale * (thickness[:-2] + beta) / alpha
+    psi = scale * (alpha + thickness[2:]) / beta
+
+    # lam/mu/nu for j in [1, n-3]; they need ds_{j+2}, hence the shorter range.
+    alpha_m = alpha[:-1]
+    a = thickness[1:-2] / alpha_m
+    b = 2.0 * thickness[2:-1] / alpha_m
+    inv = 1.0 / (thickness[:-3] + alpha_m + thickness[3:])
+    mu = inv * thickness[1:-2] * (thickness[:-3] + thickness[1:-2]) / (thickness[1:-2] + alpha_m)
+    nu = inv * thickness[2:-1] * (thickness[2:-1] + thickness[3:]) / (thickness[2:-1] + alpha_m)
+    lam = a + mu * b - 2.0 * nu * a
+
+    lo_sum = thickness[0] + thickness[1]
+    hi_sum = thickness[-2] + thickness[-1]
+
+    return NonUniformMesh(
+        chi=zeros.at[1:-1].set(chi),
+        psi=zeros.at[1:-1].set(psi),
+        lam=zeros.at[1:-2].set(lam),
+        mu=zeros.at[1:-2].set(mu),
+        nu=zeros.at[1:-2].set(nu),
+        edge_lo=(thickness[0] / lo_sum, thickness[1] / lo_sum),
+        edge_hi=(thickness[-2] / hi_sum, thickness[-1] / hi_sum),
+    )
+
+
+def _broadcast_along(coefficient: Array, like: Array) -> Array:
+    """Reshape a per-cell coefficient so it broadcasts against trailing axes."""
+    return coefficient.reshape(coefficient.shape + (1,) * (like.ndim - 1))
+
+
+def ppm_parabola_nonuniform(con: Array, mesh: NonUniformMesh) -> Parabola:
+    """Build the monotonised parabola on a grid with varying cell width.
+
+    Ports ``vppm.F:472-541``. Unlike the horizontal case there is no halo: a
+    CMAQ column is the whole domain, bounded by the ground below and the model
+    top above. The two cells at each end therefore get reduced-order edge
+    values (``vppm.F:475-480``) rather than the full eq. (1.6) form.
+
+    ``con`` has the layer axis first; trailing axes ride along.
+    """
+    con = jnp.asarray(con)
+    n = con.shape[0]
+    if n != mesh.chi.shape[0]:
+        raise ValueError(f"con has {n} layers but the mesh was built for {mesh.chi.shape[0]}")
+
+    chi = _broadcast_along(mesh.chi, con)
+    psi = _broadcast_along(mesh.psi, con)
+    lam = _broadcast_along(mesh.lam, con)
+    mu = _broadcast_along(mesh.mu, con)
+    nu = _broadcast_along(mesh.nu, con)
+
+    # Limited slope, eqs. (1.7)-(1.8). vppm.F:486-500. The uniform-grid
+    # 0.5*(back + fwd) becomes a ds-weighted combination.
+    back = con[1:-1] - con[:-2]
+    fwd = con[2:] - con[1:-1]
+    slope = chi[1:-1] * fwd + psi[1:-1] * back
+    dc = jnp.pad(_van_leer_limit(slope, back=back, fwd=fwd), [(1, 1)] + [(0, 0)] * (con.ndim - 1))
+
+    # Edge values, eq. (1.6). vppm.F:505-507 for the interior; vppm.F:475-480
+    # for the four reduced-order values at the column ends.
+    interior = (
+        con[1:-2] + lam[1:-2] * (con[2:-1] - con[1:-2]) - mu[1:-2] * dc[2:-1] + nu[1:-2] * dc[1:-2]
+    )
+    cm = jnp.concatenate(
+        [
+            con[:1],  # cm_1    = cn_1        (zeroth order at the ground)
+            mesh.edge_lo[0] * con[1:2] + mesh.edge_lo[1] * con[:1],
+            interior,
+            mesh.edge_hi[0] * con[-1:] + mesh.edge_hi[1] * con[-2:-1],
+            con[-1:],  # cm_NI+1 = cn_NI      (zeroth order at the model top)
+        ]
+    )
+
+    # eq. (1.15). vppm.F:511-512.
+    return _monotonise(con, cl=cm[:-1], cr=cm[1:])

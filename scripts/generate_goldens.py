@@ -93,6 +93,26 @@ class VppmCase:
         assert self.con.shape == (self.ni, self.nspcs), self.name
 
 
+@dataclass(frozen=True)
+class PpmCoeffCase:
+    """One call to PPM, the non-uniform reconstruction inside ``vppm.F``.
+
+    Pins the parabola on its own, without the flux-matching velocity
+    adjustment that ``VPPM`` wraps around it.
+    """
+
+    name: str
+    ni: int
+    dt: float
+    ds: NDArray[np.float32]  # (ni,)
+    cn: NDArray[np.float32]  # (ni,)
+    note: str = ""
+
+    def __post_init__(self) -> None:
+        assert self.ds.shape == (self.ni,), self.name
+        assert self.cn.shape == (self.ni,), self.name
+
+
 def _halo(profile: NDArray[np.float64]) -> NDArray[np.float64]:
     """Pad an interior profile with SWP ghost cells by edge replication.
 
@@ -355,6 +375,44 @@ def vppm_cases() -> list[VppmCase]:
     return cases
 
 
+def ppm_coeff_cases() -> list[PpmCoeffCase]:
+    """Reconstruction cases, on both uniform and stretched vertical grids.
+
+    ``PPM`` needs at least 5 layers for its interior loops (``I = 2, NI-2``) to
+    be non-degenerate; all cases here use more.
+    """
+    nlays = 12
+    rng = np.random.default_rng(20260828)
+    uniform_ds = np.full(nlays, 1.0 / nlays)
+    stretched_ds = np.diff(np.linspace(0.0, 1.0, nlays + 1) ** 1.7)
+
+    z = np.arange(nlays)
+    profiles: dict[str, NDArray[np.float64]] = {
+        "smooth": 1.0 + 0.4 * np.sin(np.pi * z / nlays),
+        "linear": 3.0 - 0.1 * z,
+        "step": np.where(z < nlays // 2, 1.0, 4.0),
+        "spike": np.where(z == nlays // 2, 8.0, 1.0),
+        "constant": np.full(nlays, 2.0),
+        "noisy": 1.0 + 0.3 * rng.random(nlays),
+        "monotone": np.linspace(1.0, 5.0, nlays),
+    }
+
+    cases: list[PpmCoeffCase] = []
+    for grid_name, ds in (("uniform", uniform_ds), ("stretched", stretched_ds)):
+        for profile_name, cn in profiles.items():
+            cases.append(
+                PpmCoeffCase(
+                    name=f"{profile_name}_{grid_name}",
+                    ni=nlays,
+                    dt=60.0,
+                    ds=ds.astype(F32),
+                    cn=cn.astype(F32),
+                    note=f"{profile_name} profile on a {grid_name} grid",
+                )
+            )
+    return cases
+
+
 # --------------------------------------------------------------------------
 # Running the harness
 # --------------------------------------------------------------------------
@@ -438,6 +496,23 @@ def run_vppm(case: VppmCase, workdir: Path) -> dict[str, NDArray[np.float32]]:
     return {"con_out": con.copy(), "vel_out": values[n_con:].copy()}
 
 
+def run_ppm_coeffs(case: PpmCoeffCase, workdir: Path) -> dict[str, NDArray[np.float32]]:
+    payload = (
+        struct.pack("<i", case.ni)
+        + struct.pack("<f", case.dt)
+        + case.ds.astype(F32).tobytes(**_f())
+        + case.cn.astype(F32).tobytes(**_f())
+    )
+    raw = _run(BUILD / "harness_ppm_coeffs", payload, workdir)
+
+    expected = 4 * case.ni * 4
+    if len(raw) != expected:
+        raise RuntimeError(f"{case.name}: got {len(raw)} output bytes, expected {expected}")
+
+    cr, cl, dc, c6 = np.frombuffer(raw, dtype=F32).reshape((4, case.ni))
+    return {"cr": cr.copy(), "cl": cl.copy(), "dc": dc.copy(), "c6": c6.copy()}
+
+
 # --------------------------------------------------------------------------
 # Golden files
 # --------------------------------------------------------------------------
@@ -472,6 +547,17 @@ def vppm_golden(case: VppmCase, workdir: Path) -> dict[str, NDArray[np.generic]]
     }
 
 
+def ppm_coeff_golden(case: PpmCoeffCase, workdir: Path) -> dict[str, NDArray[np.generic]]:
+    out = run_ppm_coeffs(case, workdir)
+    return {
+        "ni": np.int32(case.ni),
+        "dt": np.float32(case.dt),
+        "ds": case.ds,
+        "cn": case.cn,
+        **out,
+    }
+
+
 @dataclass
 class Result:
     written: list[str] = field(default_factory=list)
@@ -491,6 +577,8 @@ def generate(check: bool) -> Result:
             work.append((f"hppm_{case.name}", hppm_golden(case, workdir)))
         for vcase in vppm_cases():
             work.append((f"vppm_{vcase.name}", vppm_golden(vcase, workdir)))
+        for ccase in ppm_coeff_cases():
+            work.append((f"coeffs_{ccase.name}", ppm_coeff_golden(ccase, workdir)))
 
     for name, arrays in work:
         path = GOLDENS / f"{name}.npz"
