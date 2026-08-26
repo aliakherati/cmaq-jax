@@ -736,6 +736,127 @@ def hadv_cases() -> list[HadvCase]:
     return cases
 
 
+@dataclass(frozen=True)
+class ZadvCase:
+    """One call to ZADV, CMAQ's vertical-advection driver."""
+
+    name: str
+    faces: NDArray[np.float32]  # (nlays+1,) sigma face coordinates
+    rhoj_met: NDArray[np.float32]  # (ncols, nrows, nlays) met density
+    cgrid: NDArray[np.float32]  # (ncols, nrows, nlays, ntrns+1); last slot rho*J
+    tstep: tuple[int, int, int] = (10000, 300, 0)
+    jdate: int = 2018182
+    jtime: int = 120000
+    note: str = ""
+
+    def __post_init__(self) -> None:
+        ncols, nrows, nlays, _ = self.cgrid.shape
+        assert self.faces.shape == (nlays + 1,), self.name
+        assert self.rhoj_met.shape == (ncols, nrows, nlays), self.name
+
+
+def zadv_cases() -> list[ZadvCase]:
+    """Vertical cases, chosen for what only the driver reaches.
+
+    The Courant number here is not set by a wind field -- it follows from how
+    far the transported density has drifted from the meteorology, since that
+    mismatch is what the diagnosed flux has to close. A larger mismatch means a
+    larger flux, and past a Courant of one the driver has to sub-step.
+    """
+    ncols, nrows, nlays = 4, 3, 12
+    rng = np.random.default_rng(20260904)
+    stretched = (np.linspace(1.0, 0.0, nlays + 1) ** 0.625).astype(F32)
+    uniform = np.linspace(1.0, 0.0, nlays + 1).astype(F32)
+    cases: list[ZadvCase] = []
+
+    def build(
+        name: str,
+        *,
+        faces: NDArray[np.float32],
+        mismatch: float,
+        ntrns: int = 2,
+        coupled_q: list[float] | None = None,
+        note: str = "",
+    ) -> ZadvCase:
+        rhoj = 1.5 + 0.4 * rng.random((ncols, nrows, nlays))
+        drift = mismatch * np.sin(np.linspace(0.0, 2.0 * np.pi, nlays))[None, None, :]
+        rhoj_met = rhoj * (1.0 + drift)
+
+        if coupled_q is None:
+            tracers = [1.0 + rng.random((ncols, nrows, nlays)) for _ in range(ntrns)]
+            tracers[0][:, :, nlays // 2] += 5.0
+        else:
+            tracers = [q * rhoj for q in coupled_q]
+
+        return ZadvCase(
+            name=name,
+            faces=faces,
+            rhoj_met=rhoj_met.astype(F32),
+            cgrid=np.stack([*tracers, rhoj], axis=-1).astype(F32),
+            note=note,
+        )
+
+    cases.append(
+        build(
+            "gentle_stretched",
+            faces=stretched,
+            mismatch=0.02,
+            note="Courant well under 1: a single pass, no sub-stepping",
+        )
+    )
+    cases.append(
+        build(
+            "gentle_uniform_layers",
+            faces=uniform,
+            mismatch=0.02,
+            note="same, on evenly spaced layers",
+        )
+    )
+    cases.append(
+        build(
+            "substepped",
+            faces=stretched,
+            mismatch=0.3,
+            note="Courant above 1: the driver must split the sync step",
+        )
+    )
+    cases.append(
+        build(
+            "heavily_substepped",
+            faces=stretched,
+            mismatch=0.6,
+            note="Courant above 2: several sub-steps, each shorter than the last",
+        )
+    )
+    cases.append(
+        build(
+            "constancy",
+            faces=stretched,
+            mismatch=0.15,
+            coupled_q=[0.75, 3.0],
+            note="coupled units; q must survive the column solve",
+        )
+    )
+    cases.append(
+        build(
+            "no_mismatch",
+            faces=stretched,
+            mismatch=0.0,
+            note="transported density already matches met: no flux, nothing moves",
+        )
+    )
+    cases.append(
+        build(
+            "single_species",
+            faces=stretched,
+            mismatch=0.1,
+            ntrns=1,
+            note="the smallest species layout",
+        )
+    )
+    return cases
+
+
 # --------------------------------------------------------------------------
 # Running the harness
 # --------------------------------------------------------------------------
@@ -870,6 +991,25 @@ def run_hadv(case: HadvCase, workdir: Path) -> dict[str, NDArray[np.float32]]:
     return {"cgrid_out": np.frombuffer(raw, dtype=F32).reshape(case.cgrid.shape, order="F").copy()}
 
 
+def run_zadv(case: ZadvCase, workdir: Path) -> dict[str, NDArray[np.float32]]:
+    ncols, nrows, nlays, nspc = case.cgrid.shape
+    payload = (
+        struct.pack("<4i", ncols, nrows, nlays, nspc - 1)
+        + struct.pack("<2i", case.jdate, case.jtime)
+        + struct.pack("<3i", *case.tstep)
+        + case.faces.astype(F32).tobytes(**_f())
+        + case.rhoj_met.astype(F32).tobytes(**_f())
+        + case.rhoj_met.astype(F32).tobytes(**_f())  # end-of-step; unused, FBLN = 1
+        + case.cgrid.astype(F32).tobytes(**_f())
+    )
+    raw = _run(BUILD / "harness_zadv", payload, workdir)
+
+    expected = case.cgrid.size * 4
+    if len(raw) != expected:
+        raise RuntimeError(f"{case.name}: got {len(raw)} output bytes, expected {expected}")
+    return {"cgrid_out": np.frombuffer(raw, dtype=F32).reshape(case.cgrid.shape, order="F").copy()}
+
+
 # --------------------------------------------------------------------------
 # Golden files
 # --------------------------------------------------------------------------
@@ -940,6 +1080,16 @@ def hadv_golden(case: HadvCase, workdir: Path) -> dict[str, NDArray[np.generic]]
     }
 
 
+def zadv_golden(case: ZadvCase, workdir: Path) -> dict[str, NDArray[np.generic]]:
+    return {
+        "faces": case.faces,
+        "rhoj_met": case.rhoj_met,
+        "cgrid_in": case.cgrid,
+        "tstep": np.array(case.tstep, dtype=np.int32),
+        **run_zadv(case, workdir),
+    }
+
+
 @dataclass
 class Result:
     written: list[str] = field(default_factory=list)
@@ -965,6 +1115,8 @@ def generate(check: bool) -> Result:
             work.append((f"zfdbc_{zcase.name}", zfdbc_golden(zcase, workdir)))
         for hcase in hadv_cases():
             work.append((f"hadv_{hcase.name}", hadv_golden(hcase, workdir)))
+        for zcase2 in zadv_cases():
+            work.append((f"zadv_{zcase2.name}", zadv_golden(zcase2, workdir)))
 
     for name, arrays in work:
         path = GOLDENS / f"{name}.npz"

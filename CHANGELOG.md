@@ -97,6 +97,11 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   flux-matching velocity adjustment, porting `vppm.F`. Matches all 7 `vppm`
   goldens — concentrations to 0.4 float32 ULPs, adjusted velocities to 1.9 —
   in both precisions.
+- **A2.1/A2.4** — `cmaq_jax.vadv`: the flux diagnosis from the rho*J budget and
+  the per-column CFL sub-stepping, porting `zadvppmwrf.F`. A new `harness_zadv`
+  golden-tests the whole vertical chain; 7 `zadv_*` goldens cover both CFL
+  regimes (Courant 0.08 to 2.25, one to three sub-steps). Agreement with the
+  Fortran: worst case 1.6 float32 ULPs, in both precisions.
 
 ### Changed
 

@@ -63,6 +63,21 @@ module VGRD_DEFN
    implicit none
    public
    integer :: NLAYS = 1
+
+   !> Sigma face coordinates, X3FACE_GD(0:NLAYS). zadvppmwrf.F:246 differences
+   !> these to get the layer thicknesses.
+   real(8), allocatable :: X3FACE_GD(:)
+
+contains
+
+   subroutine set_vgrid(faces)
+      real, intent(in) :: faces(:)
+      NLAYS = size(faces) - 1
+      if (allocated(X3FACE_GD)) deallocate (X3FACE_GD)
+      allocate (X3FACE_GD(0:NLAYS))
+      X3FACE_GD = real(faces, kind(X3FACE_GD))
+   end subroutine set_vgrid
+
 end module VGRD_DEFN
 
 !-----------------------------------------------------------------------
@@ -245,3 +260,25 @@ module RUNTIME_VARS
    logical :: BC_AERO_M2WET = .false.
    logical :: BC_AERO_M2USE = .false.
 end module RUNTIME_VARS
+
+!-----------------------------------------------------------------------
+! WVEL_DEFN: the diagnosed vertical velocity, optionally written to the
+! CONC file. zadvppmwrf.F fills WY and calls GET_WVEL only when W_VEL is
+! set, so leaving it false skips both.
+!-----------------------------------------------------------------------
+module WVEL_DEFN
+   implicit none
+   public
+
+   logical :: W_VEL = .false.
+   real, allocatable :: WY(:, :, :)
+
+contains
+
+   subroutine GET_WVEL(jdate, jtime)
+      integer, intent(in) :: jdate, jtime
+      integer :: ignored
+      ignored = jdate + jtime
+   end subroutine GET_WVEL
+
+end module WVEL_DEFN

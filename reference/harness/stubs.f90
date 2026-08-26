@@ -43,6 +43,11 @@ module UTILIO_DEFN
    integer :: STUB_FILE_NVARS = 0
    character(len=16) :: STUB_FILE_VNAMES(128) = ' '
 
+   !> Unit the model writes its log to. The real one comes back from the I/O
+   !> API's INIT3; pointing it at stderr keeps diagnostics away from any data
+   !> a harness writes to stdout.
+   integer :: LOGDEV = error_unit
+
    ! What LSTEPF reports as the last step on file. Far enough ahead that
    ! hcontvel.F's REVERT check never trips.
    integer :: STUB_LAST_DATE = 2099365

@@ -68,7 +68,7 @@ STENEX_OBJ := $(patsubst $(STENEX)/%.f,$(BUILD)/%.o,$(STENEX_SRC))
 COMMON_OBJ := $(BUILD)/stubs.o $(BUILD)/stubs_driver.o $(STENEX_OBJ)
 
 HARNESSES := $(BUILD)/harness_hppm $(BUILD)/harness_vppm $(BUILD)/harness_ppm_coeffs \
-             $(BUILD)/harness_zfdbc $(BUILD)/harness_hadv
+             $(BUILD)/harness_zfdbc $(BUILD)/harness_hadv $(BUILD)/harness_zadv
 
 .PHONY: all clean
 all: $(HARNESSES)
@@ -130,6 +130,13 @@ $(BUILD)/harness_hadv: $(COMMON_OBJ) \
                        $(BUILD)/hcontvel.o $(BUILD)/x_ppm.o $(BUILD)/y_ppm.o \
                        $(BUILD)/hadvppm.o $(BUILD)/stub_rdbcon.o \
                        $(BUILD)/harness_hadv.o
+	$(FC) $(FFLAGS) $^ -o $@
+
+# The vertical chain: driver plus kernel, both vendored.
+$(BUILD)/zadvppmwrf.o: $(BUILD)/vppm.o
+
+$(BUILD)/harness_zadv: $(COMMON_OBJ) $(BUILD)/vppm.o $(BUILD)/zadvppmwrf.o \
+                       $(BUILD)/harness_zadv.o
 	$(FC) $(FFLAGS) $^ -o $@
 
 clean:

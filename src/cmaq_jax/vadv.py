@@ -25,7 +25,15 @@ from jax import Array
 from cmaq_jax.config import DEFAULT_PPM, PPMConstants
 from cmaq_jax.ppm import NonUniformMesh, Parabola, ppm_parabola_nonuniform
 
-__all__ = ["AdjustedVelocity", "vppm", "vppm_adjust_velocity"]
+__all__ = [
+    "AdjustedVelocity",
+    "ZadvDiagnostics",
+    "diagnose_flux",
+    "face_velocity_from_flux",
+    "vppm",
+    "vppm_adjust_velocity",
+    "zadv",
+]
 
 
 class AdjustedVelocity(NamedTuple):
@@ -40,6 +48,20 @@ class AdjustedVelocity(NamedTuple):
 
     vel: Array
     residual: Array
+
+
+def _with_layer_axis(dt: float | Array, extra: int = 0) -> Array:
+    """Give a per-column time step the axes it needs to broadcast.
+
+    Under CFL sub-stepping every column carries its own ``dt``, shaped like the
+    batch. The arrays it multiplies are layer-first, and sometimes
+    species-last, so the scalar case passes through and the per-column case
+    gains a leading layer axis plus ``extra`` trailing ones.
+    """
+    step = jnp.asarray(dt)
+    if step.ndim == 0:
+        return step
+    return step.reshape((1, *step.shape, *([1] * extra)))
 
 
 def _face_flux(
@@ -247,11 +269,195 @@ def vppm(
     reports any face that did not converge.
     """
     con = jnp.asarray(con)
-    ds = jnp.asarray(ds)
+    vel = jnp.asarray(vel)
+    # ds is per-layer; give it trailing singletons so it broadcasts against
+    # whatever batch dimensions the caller brought.
+    ds_faces = jnp.asarray(ds).reshape((-1,) + (1,) * (vel.ndim - 1))
+    ds_cells = jnp.asarray(ds).reshape((-1,) + (1,) * (con.ndim - 1))
 
-    density = ppm_parabola_nonuniform(con[:, -1], mesh)
-    adjusted = vppm_adjust_velocity(vel, flx, density, ds, dt=dt, ppm=ppm)
+    density = ppm_parabola_nonuniform(con[..., -1], mesh)
+    adjusted = vppm_adjust_velocity(vel, flx, density, ds_faces, dt=_with_layer_axis(dt), ppm=ppm)
 
     parabola = ppm_parabola_nonuniform(con, mesh)
-    advected = _advect_column(con, adjusted.vel[:, None], parabola, ds[:, None], dt=dt, ppm=ppm)
+    advected = _advect_column(
+        con,
+        adjusted.vel[..., None],
+        parabola,
+        ds_cells,
+        dt=_with_layer_axis(dt, extra=1),
+        ppm=ppm,
+    )
     return advected, adjusted
+
+
+class ZadvDiagnostics(NamedTuple):
+    """What the vertical solve had to do, per column.
+
+    ``substeps`` counts the CFL sub-steps taken; ``max_courant`` is the largest
+    Courant number seen on the first pass; ``residual`` is the worst leftover
+    flux mismatch from the velocity adjustment. All three are the signals CMAQ
+    would otherwise have turned into an ``M3EXIT``.
+    """
+
+    substeps: Array
+    max_courant: Array
+    residual: Array
+
+
+def diagnose_flux(
+    rhoj_met: Array,
+    rhoj_transported: Array,
+    ds: Array,
+    dt: float | Array,
+) -> Array:
+    """Face mass flux implied by the density budget.
+
+    Ports ``zadvppmwrf.F:343-372``. Horizontal advection leaves the transported
+    rho*J disagreeing with the meteorology; the vertical flux is chosen to
+    close that gap, which is what makes advected density track the met fields.
+
+    ``DIVV(l) = (rhoj_met(l) - rhoj_transported(l)) * ds(l) / dt`` is the
+    per-layer mismatch, ``DRJ = -sum(DIVV)`` the column total, and
+
+        FLX(1) = 0,   FLX(l+1) = FLX(l) - ds(l)*DRJ - DIVV(l)
+
+    a running sum from the impermeable ground upward.
+
+    Two things drop out of the upstream expression, both because ``FBLN`` is
+    hard-set to 1.0 (``zadvppmwrf.F:249``, the sigmoid commented out):
+
+    * the blend against the alternative ``FLUX`` accumulator is a no-op;
+    * ``RHOJM2``, the end-of-step met density, feeds only that dead accumulator
+      and is therefore **not needed at all**. Only the start-of-step density
+      appears here.
+
+    The layer axis comes first; the result has one more entry along it.
+    """
+    rhoj_met = jnp.asarray(rhoj_met)
+    rhoj_transported = jnp.asarray(rhoj_transported)
+    thickness = jnp.asarray(ds).reshape((-1,) + (1,) * (rhoj_met.ndim - 1))
+
+    divv = (rhoj_met - rhoj_transported) * thickness / dt
+    column_total = -jnp.sum(divv, axis=0, keepdims=True)
+
+    increments = -thickness * column_total - divv
+    surface = jnp.zeros((1, *increments.shape[1:]), dtype=increments.dtype)
+    return jnp.concatenate([surface, jnp.cumsum(increments, axis=0)])
+
+
+def face_velocity_from_flux(flx: Array, rhoj_transported: Array) -> Array:
+    """Face velocity from face flux, upwinded on the sign of the flux.
+
+    Ports ``zadvppmwrf.F:374-381``: ``VEL(l) = FLX(l)/RJT(l-1)`` when the flux
+    is non-negative, else ``FLX(l)/RJT(l)``. The bottom face is pinned to zero
+    — the ground is impermeable — and the top face always draws on the layer
+    below it, there being nothing above.
+    """
+    flx = jnp.asarray(flx)
+    rhoj = jnp.asarray(rhoj_transported)
+
+    below = jnp.concatenate([rhoj[:1], rhoj])  # donor when flux is upward
+    above = jnp.concatenate([rhoj, rhoj[-1:]])  # donor when flux is downward
+    velocity = jnp.where(flx >= 0.0, flx / below, flx / above)
+    return velocity.at[0].set(0.0)
+
+
+def _max_courant(vel: Array, ds: Array, dt: float | Array) -> Array:
+    """Largest Courant number over a column's faces.
+
+    Ports ``zadvppmwrf.F:383-410``. Each face is measured against the layer the
+    flow is coming *from*: upward against the layer below, downward against the
+    layer above. The top face is the exception — the Fortran uses the layer
+    below it for both signs, since there is no layer above.
+
+    The bottom face is skipped; its velocity is pinned to zero.
+    """
+    step = _with_layer_axis(dt)
+    thickness = jnp.asarray(ds).reshape((-1,) + (1,) * (vel.ndim - 1))
+    # Interior faces are 1 .. nlays-1. Face f draws on layer f-1 when the flow
+    # is upward and layer f when it is downward, so the two donor arrays are
+    # the thicknesses shifted against each other -- both nlays-1 long, matching
+    # vel[1:-1].
+    below = thickness[:-1]
+    above = thickness[1:]
+
+    interior = vel[1:-1]
+    courant_interior = jnp.where(interior > 0.0, interior * step / below, -interior * step / above)
+    # Top face: `DS(LVL-1)` on both branches (zadvppmwrf.F:404, :407).
+    top = jnp.abs(vel[-1:]) * step / thickness[-1:]
+
+    return jnp.max(jnp.concatenate([courant_interior, top]), axis=0)
+
+
+def zadv(
+    con: Array,
+    rhoj_met: Array,
+    ds: Array,
+    mesh: NonUniformMesh,
+    *,
+    dt: float,
+    ppm: PPMConstants = DEFAULT_PPM,
+) -> tuple[Array, ZadvDiagnostics]:
+    """Vertical advection over one sync step.
+
+    Ports ``ZADV`` (``zadvppmwrf.F``). ``con`` is ``(nlays, ..., nspc)`` in
+    coupled transport units with rho*J last; ``rhoj_met`` is the meteorological
+    density at the **start** of the sync step, ``(nlays, ...)``.
+
+    The Courant number is checked against the diagnosed velocity, and a column
+    that exceeds one is advanced in sub-steps of ``0.9*dt/CC`` until the
+    remaining time is safe (``zadvppmwrf.F:412-459``). CMAQ writes that as a
+    ``GO TO`` loop with a cap of 30; here it is a fixed-count ``fori_loop``
+    carrying the remaining time, with finished columns masked off. Columns
+    advance independently, which is what the mask buys — a whole grid runs at
+    once even though each column needs a different number of sub-steps.
+
+    ``FLX`` is computed once, outside the loop. In the Fortran it sits *inside*
+    the retry block and looks as though it were being refreshed, but with
+    ``FBLN`` at 1.0 it depends only on quantities fixed before the loop starts,
+    so recomputing it would be wasted work. The velocity *is* refreshed each
+    sub-step, since it divides by the transported density that has just changed.
+    """
+    con = jnp.asarray(con)
+    flx = diagnose_flux(rhoj_met, con[..., -1], ds, dt)
+
+    batch = con.shape[1:-1]
+    remaining = jnp.full(batch, float(dt), dtype=con.dtype)
+    taken = jnp.zeros(batch, dtype=jnp.int32)
+
+    def sub_step(
+        _: int, carry: tuple[Array, Array, Array, Array]
+    ) -> tuple[Array, Array, Array, Array]:
+        state, left, count, worst_residual = carry
+        vel = face_velocity_from_flux(flx, state[..., -1])
+        courant = _max_courant(vel, ds, left)
+
+        # Safe column: finish the remaining time in one go. Otherwise take the
+        # CFL-limited slice, floored at a second (zadvppmwrf.F:426).
+        limited = jnp.maximum(
+            ppm.cfl_safety * left / jnp.maximum(courant, 1e-30), ppm.min_substep_seconds
+        )
+        step = jnp.where(courant > 1.0, jnp.minimum(limited, left), left)
+        active = left > 0.0
+
+        advected, adjusted = vppm(state, vel, flx, ds, mesh, dt=step, ppm=ppm)
+        keep = active[None, ..., None]
+        return (
+            jnp.where(keep, advected, state),
+            jnp.where(active, left - step, left),
+            count + active.astype(count.dtype),
+            jnp.maximum(worst_residual, jnp.where(active, jnp.max(adjusted.residual, axis=0), 0.0)),
+        )
+
+    first_courant = _max_courant(face_velocity_from_flux(flx, con[..., -1]), ds, dt)
+    state, left, taken, residual = jax.lax.fori_loop(
+        0, ppm.max_substeps, sub_step, (con, remaining, taken, jnp.zeros(batch, dtype=con.dtype))
+    )
+
+    return state, ZadvDiagnostics(
+        substeps=taken,
+        max_courant=first_courant,
+        # A column with time left over never finished; surface that as a failed
+        # adjustment rather than letting it pass silently.
+        residual=jnp.where(left > 0.0, jnp.inf, residual),
+    )
