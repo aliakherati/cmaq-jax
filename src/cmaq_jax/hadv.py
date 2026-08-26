@@ -225,7 +225,16 @@ def hadv_step(
     sub-step's midpoint, but that is time interpolation inside the met reader
     rather than anything advection does; it belongs with ``io_mcip`` (A3.5).
     """
-    cgrid = jnp.asarray(cgrid)
+    # Cast once, here. The kernels are dtype-transparent -- they propagate
+    # whatever they are given -- so the working precision is fixed at the one
+    # entry point rather than depending on how a caller happened to build its
+    # arrays. CMAQ itself runs in float32; float64 is our default.
+    precision = cfg.numpy_dtype
+    cgrid = jnp.asarray(cgrid, dtype=precision)
+    uhat = jnp.asarray(uhat, dtype=precision)
+    vhat = jnp.asarray(vhat, dtype=precision)
+    bcon = BoundaryConditions(*(jnp.asarray(edge, dtype=precision) for edge in bcon))
+
     nlays = cgrid.shape[2]
     astep = np.asarray(astep_seconds, dtype=np.int64)
 

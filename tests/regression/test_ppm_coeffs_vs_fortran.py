@@ -47,6 +47,13 @@ pytestmark = pytest.mark.goldens
 
 CASES = sorted(p.stem for p in GOLDENS.glob("coeffs_*.npz"))
 
+# CMAQ runs in float32; we default to float64. Both are supported compute paths,
+# so every golden comparison runs twice. Measured worst case against the
+# goldens: float64-then-downcast and native float32 agree with the Fortran to
+# comparable accuracy, and float32 is often closer -- unsurprisingly, since it
+# is doing the same arithmetic in the same precision as the reference.
+PRECISIONS = [np.float32, np.float64]
+
 
 def _load(name: str) -> dict[str, Any]:
     with np.load(GOLDENS / f"{name}.npz", allow_pickle=False) as data:
@@ -57,11 +64,12 @@ def test_cases_present() -> None:
     assert CASES, f"no coeffs goldens in {GOLDENS}; run scripts/generate_goldens.py"
 
 
+@pytest.mark.parametrize("dtype", PRECISIONS, ids=["f32", "f64"])
 @pytest.mark.parametrize("name", CASES)
-def test_matches_fortran(name: str) -> None:
+def test_matches_fortran(name: str, dtype: type) -> None:
     golden = _load(name)
-    cn = np.asarray(golden["cn"], dtype=np.float64)
-    mesh = nonuniform_mesh(np.asarray(golden["ds"], dtype=np.float64))
+    cn = np.asarray(golden["cn"], dtype=dtype)
+    mesh = nonuniform_mesh(np.asarray(golden["ds"], dtype=dtype))
     got = ppm_parabola_nonuniform(cn, mesh)
     atol = _atol(cn)
 

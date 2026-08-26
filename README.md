@@ -134,7 +134,7 @@ Recorded so no numerical difference is ever silent.
 
 | Deviation | Reason |
 |---|---|
-| float64 default (Fortran is float32) | Accuracy; float32 selectable via `GridConfig.dtype`. Golden comparison downcasts via `atmos_jax_common.real4`. |
+| float64 default (Fortran is float32) | Accuracy. float32 is a fully supported compute path, not just a comparison target: `GridConfig.dtype` selects it and `hadv_step` casts to it. **Every golden comparison runs in both precisions.** Native float32 often agrees with the Fortran *more* closely than float64-then-downcast, since it does the same arithmetic in the same precision. |
 | `FBLN` blend term dropped | Hard-set to `1.0` upstream (`zadvppmwrf.F:249`, sigmoid commented out) — the term is identically a no-op. |
 | Fixed-count loops replace unbounded `GO TO` loops | Data-dependent trip counts don't jit. Non-convergence is reported as a residual instead of `M3EXIT`. |
 | ISAM / DDM-3D / IPR-budget branches omitted | Out of scope; JAX autodiff supersedes DDM-3D. |

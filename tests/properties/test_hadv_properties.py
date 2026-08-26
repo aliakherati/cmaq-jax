@@ -272,3 +272,85 @@ class TestLayers:
                 )
             )
             np.testing.assert_allclose(alone[:, :, 0], together[:, :, layer], rtol=1e-12)
+
+
+class TestFloat32:
+    """The invariants must survive CMAQ's own precision, not just float64.
+
+    float32 is what CMAQ runs in and what a GPU is likeliest to want for memory
+    bandwidth, so the guarantees have to hold there. The tolerances are looser
+    by roughly the ratio of the two epsilons, and nothing else changes.
+    """
+
+    N = 32
+    DT = 20
+
+    @staticmethod
+    def _cfg(n: int, nlays: int, nspc: int) -> GridConfig:
+        return GridConfig(
+            ncols=n,
+            nrows=n,
+            ds=np.full(nlays, 1.0 / nlays),
+            dx1=DX,
+            dx2=DX,
+            nspc_adv=nspc,
+            dtype="float32",
+        )
+
+    def _advect(
+        self,
+        cgrid: np.ndarray,
+        u: np.ndarray,
+        v: np.ndarray,
+        bcon: BoundaryConditions,
+        nsteps: int,
+    ) -> np.ndarray:
+        cfg = self._cfg(self.N, cgrid.shape[2], cgrid.shape[-1])
+        astep = np.full(cgrid.shape[2], self.DT)
+        state, phase = cgrid, (True,) * cgrid.shape[2]
+        for _ in range(nsteps):
+            state = hadv_step(
+                state, u, v, bcon, cfg=cfg, astep_seconds=astep, sync_seconds=self.DT, xyfirst=phase
+            )
+            phase = advance_xyfirst(phase, astep, self.DT)
+        assert state.dtype == np.float32
+        return np.asarray(state)
+
+    def test_positivity_and_monotonicity(self) -> None:
+        """A sharp spike on a clean background: any undershoot is immediately
+        negative, which is how a limiter failure shows up in float32."""
+        n = self.N
+        u, v = solid_body_wind(n)
+        spike = np.zeros((n, n, 1))
+        spike[n // 2, 3 * n // 4, 0] = 10.0
+        rhoj = np.ones((n, n, 1))
+        cgrid, bcon = make_state([spike * rhoj], rhoj, [0.0], 1.0)
+
+        out = self._advect(cgrid.astype(np.float32), u, v, bcon, nsteps=40)
+        assert out[..., 0].min() >= 0.0, f"negative concentration: {out[..., 0].min()}"
+        assert out[..., 0].max() <= 10.0 + 1e-4
+
+    def test_density_is_still_exactly_unchanged(self) -> None:
+        """The wind is discretely non-divergent, so rho*J must hold in float32
+        too -- to float32 round-off, not to float64's."""
+        n = self.N
+        u, v = solid_body_wind(n)
+        rhoj = np.ones((n, n, 1))
+        cgrid, bcon = make_state([np.zeros((n, n, 1))], rhoj, [0.0], 1.0)
+        out = self._advect(cgrid.astype(np.float32), u, v, bcon, nsteps=40)
+        np.testing.assert_allclose(out[..., -1], 1.0, rtol=1e-6)
+
+    def test_constancy_holds_at_float32_precision(self) -> None:
+        """The CMAQ invariant, in CMAQ's precision, under a divergent wind."""
+        n = self.N
+        u, v = solid_body_wind(n)
+        u = u + 12.0 * np.sin(np.linspace(0.0, 3.0 * np.pi, n + 1))[:, None, None]
+
+        rng = np.random.default_rng(20260903)
+        rhoj = 1.5 + 0.4 * rng.random((n, n, 1))
+        q = [0.5, 3.0]
+        cgrid, bcon = make_state([qq * rhoj for qq in q], rhoj, [qq * 2.0 for qq in q], 2.0)
+
+        out = self._advect(cgrid.astype(np.float32), u, v, bcon, nsteps=40)
+        for spc, q_expected in enumerate(q):
+            np.testing.assert_allclose(out[..., spc] / out[..., -1], q_expected, rtol=1e-5)

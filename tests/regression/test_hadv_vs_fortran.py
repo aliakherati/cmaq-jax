@@ -32,6 +32,13 @@ pytestmark = pytest.mark.goldens
 
 CASES = sorted(p.stem for p in GOLDENS.glob("hadv_*.npz"))
 
+# CMAQ runs in float32; we default to float64. Both are supported compute paths,
+# so every golden comparison runs twice. Measured worst case against the
+# goldens: float64-then-downcast and native float32 agree with the Fortran to
+# comparable accuracy, and float32 is often closer -- unsurprisingly, since it
+# is doing the same arithmetic in the same precision as the reference.
+PRECISIONS = [np.float32, np.float64]
+
 
 def _load(name: str) -> dict[str, Any]:
     with np.load(GOLDENS / f"{name}.npz", allow_pickle=False) as data:
@@ -57,8 +64,8 @@ def _split_bcon(flat: np.ndarray, ncols: int, nrows: int) -> BoundaryConditions:
     )
 
 
-def _run(golden: dict[str, Any]) -> np.ndarray:
-    cgrid = np.asarray(golden["cgrid_in"], dtype=np.float64)
+def _run(golden: dict[str, Any], dtype: type = np.float64) -> np.ndarray:
+    cgrid = np.asarray(golden["cgrid_in"], dtype=dtype)
     ncols, nrows, nlays, nspc = cgrid.shape
 
     cfg = GridConfig(
@@ -68,11 +75,12 @@ def _run(golden: dict[str, Any]) -> np.ndarray:
         dx1=float(golden["xcell"]),
         dx2=float(golden["ycell"]),
         nspc_adv=nspc,
+        dtype="float32" if dtype is np.float32 else "float64",
     )
 
     # C-staggered winds: hcontvel.F returns them unchanged (see velocity.py).
-    uhat = face_velocity(np.asarray(golden["uwindc"], dtype=np.float64), axis=0)
-    vhat = face_velocity(np.asarray(golden["vwindc"], dtype=np.float64), axis=1)
+    uhat = face_velocity(np.asarray(golden["uwindc"], dtype=dtype), axis=0)
+    vhat = face_velocity(np.asarray(golden["vwindc"], dtype=dtype), axis=1)
 
     bcon = _split_bcon(
         np.asarray(golden["bcon"], dtype=np.float64).transpose(0, 2, 1), ncols, nrows
@@ -94,6 +102,7 @@ def _run(golden: dict[str, Any]) -> np.ndarray:
             sync_seconds=sync,
             xyfirst=xyfirst,
         )
+    assert cgrid.dtype == dtype, f"driver did not honour cfg.dtype, gave {cgrid.dtype}"
     return np.asarray(cgrid)
 
 
@@ -101,11 +110,12 @@ def test_cases_present() -> None:
     assert CASES, f"no hadv goldens in {GOLDENS}; run scripts/generate_goldens.py"
 
 
+@pytest.mark.parametrize("dtype", PRECISIONS, ids=["f32", "f64"])
 @pytest.mark.parametrize("name", CASES)
-def test_matches_fortran(name: str) -> None:
+def test_matches_fortran(name: str, dtype: type) -> None:
     golden = _load(name)
     expected = np.asarray(golden["cgrid_out"], dtype=np.float64)
-    got = downcast_to_real4(_run(golden))
+    got = downcast_to_real4(_run(golden, dtype))
     scale = max(float(np.abs(expected).max()), 1.0)
     np.testing.assert_allclose(got, expected, rtol=RTOL, atol=ATOL * scale)
 

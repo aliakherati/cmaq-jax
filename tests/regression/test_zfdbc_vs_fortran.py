@@ -23,6 +23,13 @@ pytestmark = pytest.mark.goldens
 
 CASES = sorted(p.stem for p in GOLDENS.glob("zfdbc_*.npz"))
 
+# CMAQ runs in float32; we default to float64. Both are supported compute paths,
+# so every golden comparison runs twice. Measured worst case against the
+# goldens: float64-then-downcast and native float32 agree with the Fortran to
+# comparable accuracy, and float32 is often closer -- unsurprisingly, since it
+# is doing the same arithmetic in the same precision as the reference.
+PRECISIONS = [np.float32, np.float64]
+
 
 def _load(name: str) -> dict[str, Any]:
     with np.load(GOLDENS / f"{name}.npz", allow_pickle=False) as data:
@@ -33,19 +40,13 @@ def test_cases_present() -> None:
     assert CASES, f"no zfdbc goldens in {GOLDENS}; run scripts/generate_goldens.py"
 
 
+@pytest.mark.parametrize("dtype", PRECISIONS, ids=["f32", "f64"])
 @pytest.mark.parametrize("name", CASES)
-def test_matches_fortran(name: str) -> None:
+def test_matches_fortran(name: str, dtype: type) -> None:
     g = _load(name)
-    got = downcast_to_real4(
-        np.asarray(
-            zfdbc(
-                np.asarray(g["c1"], dtype=np.float64),
-                np.asarray(g["c2"], dtype=np.float64),
-                np.asarray(g["v1"], dtype=np.float64),
-                np.asarray(g["v2"], dtype=np.float64),
-            )
-        )
-    )
+    result = zfdbc(*(np.asarray(g[k], dtype=dtype) for k in ("c1", "c2", "v1", "v2")))
+    assert result.dtype == dtype, f"zfdbc did not preserve {dtype}, gave {result.dtype}"
+    got = downcast_to_real4(np.asarray(result))
     np.testing.assert_allclose(got, g["result"].astype(np.float64), rtol=1e-6, atol=1e-6)
 
 

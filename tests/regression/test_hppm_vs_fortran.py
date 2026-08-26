@@ -30,18 +30,30 @@ pytestmark = pytest.mark.goldens
 
 CASES = sorted(p.stem for p in GOLDENS.glob("hppm_*.npz"))
 
+# CMAQ runs in float32; we default to float64. Both are supported compute paths,
+# so every golden comparison runs twice. Measured worst case against the
+# goldens: float64-then-downcast and native float32 agree with the Fortran to
+# comparable accuracy, and float32 is often closer -- unsurprisingly, since it
+# is doing the same arithmetic in the same precision as the reference.
+PRECISIONS = [np.float32, np.float64]
+
 
 def _load(name: str) -> dict[str, Any]:
     with np.load(GOLDENS / f"{name}.npz", allow_pickle=False) as data:
         return {k: data[k] for k in data.files}
 
 
-def _run(golden: dict[str, Any]) -> np.ndarray:
-    """Advect the golden's input with the JAX kernel, in float64."""
-    con = np.asarray(golden["con_in"], dtype=np.float64)
+def _run(golden: dict[str, Any], dtype: type = np.float64) -> np.ndarray:
+    """Advect the golden's input with the JAX kernel at the given precision.
+
+    The kernels are dtype-transparent: they propagate whatever they are given,
+    so the input cast is what selects the compute path.
+    """
+    con = np.asarray(golden["con_in"], dtype=dtype)
     # vel varies along the sweep axis only; add a species axis to broadcast.
-    vel = np.asarray(golden["vel_in"], dtype=np.float64)[:, None]
-    out = ppm_advect_uniform(con, vel, float(golden["dt"]), float(golden["ds"]))
+    vel = np.asarray(golden["vel_in"], dtype=dtype)[:, None]
+    out = ppm_advect_uniform(con, vel, dtype(golden["dt"]), dtype(golden["ds"]))
+    assert out.dtype == dtype, f"kernel did not preserve {dtype}, gave {out.dtype}"
     return np.asarray(out)
 
 
@@ -49,10 +61,11 @@ def test_cases_present() -> None:
     assert CASES, f"no hppm goldens in {GOLDENS}; run scripts/generate_goldens.py"
 
 
+@pytest.mark.parametrize("dtype", PRECISIONS, ids=["f32", "f64"])
 @pytest.mark.parametrize("name", CASES)
-def test_matches_fortran(name: str) -> None:
+def test_matches_fortran(name: str, dtype: type) -> None:
     golden = _load(name)
-    got = downcast_to_real4(_run(golden))
+    got = downcast_to_real4(_run(golden, dtype))
     expected = np.asarray(golden["con_out"], dtype=np.float64)
 
     # Scale the tolerance by the field magnitude; concentrations here are O(1)

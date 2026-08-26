@@ -147,8 +147,14 @@ class GridConfig:
     """
 
     dtype: DType = "float64"
-    """Working precision. Fortran is ``float32``; we default to ``float64`` and
-    downcast only when comparing against goldens."""
+    """Working precision.
+
+    CMAQ runs in ``float32``. We default to ``float64`` for accuracy, but
+    ``float32`` is a supported compute path, not just a comparison target:
+    :func:`cmaq_jax.hadv.hadv_step` casts its array inputs to this, and the
+    kernels are dtype-transparent from there. Both are tested against the
+    goldens.
+    """
 
     ppm: PPMConstants = field(default_factory=PPMConstants)
 
@@ -168,6 +174,11 @@ class GridConfig:
         if not np.all(ds > 0.0):
             raise ValueError("all layer thicknesses in ds must be positive")
         object.__setattr__(self, "ds", ds)
+
+    @property
+    def numpy_dtype(self) -> np.dtype[np.floating]:
+        """:attr:`dtype` as a concrete numpy dtype."""
+        return np.dtype(self.dtype)
 
     @property
     def nlays(self) -> int:

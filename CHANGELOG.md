@@ -96,6 +96,16 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Changed
 
+- **Precision** — `GridConfig.dtype` is now wired up. It was declared in A0.2
+  and documented in the README, but nothing read it: the port was float64-only
+  and float32 appeared solely as a comparison target. `hadv_step` now casts its
+  array inputs to `cfg.dtype`, and every golden comparison is parametrized over
+  both precisions (`f32`/`f64` test ids). Agreement with the Fortran, worst case
+  in float32 ULPs: hppm 0.4, zfdbc 0.8, hadv driver 0.9, PPM coefficients 4.8
+  (the `c6` cancellation). Invariants — positivity, monotonicity, ρ·J, and
+  constancy — are checked in float32 as well, where constancy holds to ~7 ULP
+  over 40 steps.
+
 - `hadv` split into `hadv_step` (pure, jittable) and `advance_xyfirst`
   (host-side flag bookkeeping). Returning both from one function was what
   blocked `jax.jit`; wrapping the split version gives a **1134x** speed-up
