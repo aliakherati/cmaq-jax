@@ -31,6 +31,14 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   its own process to avoid the kernels' `SAVE`d first-call array sizing.
   `tests/regression/test_goldens.py` guards the harness itself: shapes,
   positivity, monotonicity, an untouched halo, and constancy preservation.
+- **A0.5/A0.7** — `cmaq_jax.ppm`: the uniform-spacing PPM sweep
+  (`ppm_parabola_uniform`, `ppm_flux_uniform`, `ppm_advect_uniform`), porting
+  `hppm.F:283-445`. Written as whole-array slices with the sweep axis first, so
+  a sweep is one fused kernel over all rows/layers/species; every Fortran `IF`
+  is a branchless `jnp.where`. Matches all 10 HPPM goldens to a worst-case
+  2.1e-7 relative (~1.7 float32 ULPs), with three cases bit-identical.
+- **A0.5** — `jax_enable_x64` is set on package import, since float64 is the
+  documented working precision and forgetting the flag silently halves it.
 
 ### Changed
 

@@ -52,7 +52,8 @@ Requires Python ≥ 3.11. Regenerating Fortran goldens additionally needs
 | repo scaffold, vendored Fortran, plan hierarchy | — | A0.1 | alpha |
 | `cmaq_jax.config` | `GridConfig`, `PPMConstants` — every constant traced to its Fortran line | A0.2 | alpha |
 | Fortran golden harness | compile `hppm.F`/`vppm.F` unmodified, emit reference arrays | A0.3–A0.4 | alpha |
-| `cmaq_jax.ppm` | 1-D PPM: uniform + non-uniform parabola, flux, conservative update | A0.5–A0.7 | not started |
+| `cmaq_jax.ppm` | 1-D PPM, uniform spacing: parabola, upwind flux, conservative update | A0.5, A0.7 | alpha |
+| `cmaq_jax.ppm` | 1-D PPM, non-uniform spacing (vertical) | A0.6 | not started |
 | `cmaq_jax.bc` | `zfdbc` outflow BC, width-3 halo fill | A1.1–A1.2 | not started |
 | `cmaq_jax.velocity` | contravariant velocity from `UHAT_JD` / `DENSA_J` | A1.3 | not started |
 | `cmaq_jax.hadv` | axis-generic sweep, layer grouping, X-Y/Y-X alternation | A1.4–A1.5 | not started |
