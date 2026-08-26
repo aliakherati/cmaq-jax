@@ -96,6 +96,9 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Changed
 
+- **Precision** — `docs/figures/a1/precision.png`: agreement with the Fortran in
+  both precisions across all four golden families, showing float32 at or below
+  float64 nearly everywhere and bit-identical on several coefficient cases.
 - **Precision** — `GridConfig.dtype` is now wired up. It was declared in A0.2
   and documented in the README, but nothing read it: the port was float64-only
   and float32 appeared solely as a comparison target. `hadv_step` now casts its

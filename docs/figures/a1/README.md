@@ -68,6 +68,28 @@ which is a more useful thing to know than a bare tolerance number.
 
 ---
 
+## `precision.png`
+
+Agreement with the Fortran in both working precisions, across all four golden
+families: the 1-D PPM sweep, the non-uniform coefficients, the outflow
+condition, and the full driver. Bars sitting on the floor are bit-identical.
+
+The point it makes: **native float32 is frequently *closer* to the reference
+than float64-then-downcast.** It does the same arithmetic in the same precision
+CMAQ uses, rather than computing more accurately and then rounding to a
+different nearby value. Several `coeffs` cases are bit-identical in float32
+where float64 carries a few ULPs of difference.
+
+So choosing float32 on a GPU — for memory bandwidth, and because it is what
+CMAQ itself runs in — costs nothing in fidelity against the reference. The
+worst case anywhere in the port is 4.8 float32 ULPs, and that is the known `c6`
+cancellation rather than anything precision-specific.
+
+There is no animation of this. Agreement is one static number per case; a GIF
+would show a still image moving.
+
+---
+
 ## What is not shown here
 
 The deformational swirl is not repeated through the driver. Its velocity field

@@ -30,14 +30,19 @@ matplotlib.use("Agg")
 import jax
 import matplotlib.pyplot as plt
 import numpy as np
+from atmos_jax_common.real4 import downcast_to_real4
 from matplotlib.colors import Normalize
 
+from cmaq_jax.bc import zfdbc
 from cmaq_jax.config import DEFAULT_PPM, GridConfig
-from cmaq_jax.hadv import BoundaryConditions, advance_xyfirst, hadv_step
-from cmaq_jax.ppm import ppm_advect_uniform
+from cmaq_jax.hadv import BoundaryConditions, advance_xyfirst, hadv, hadv_step
+from cmaq_jax.ppm import nonuniform_mesh, ppm_advect_uniform, ppm_parabola_nonuniform
+from cmaq_jax.velocity import face_velocity
 
 REPO = Path(__file__).resolve().parent.parent
 FIGURES = REPO / "docs" / "figures" / "a1"
+GOLDENS = REPO / "data" / "goldens"
+EPS32 = float(np.finfo(np.float32).eps)
 SWP = DEFAULT_PPM.halo_width
 
 FIELD_CMAP = "magma"
@@ -266,9 +271,148 @@ def figure_periodic_vs_driver() -> None:
     _save(fig, "periodic_vs_driver")
 
 
+def _errors_for(family: str, dtype: type) -> dict[str, float]:
+    """Per-case relative disagreement with the Fortran, at one precision."""
+    out: dict[str, float] = {}
+    for path in sorted(GOLDENS.glob(f"{family}_*.npz")):
+        with np.load(path) as g:
+            data = {k: g[k] for k in g.files}
+        name = path.stem.removeprefix(f"{family}_")
+
+        if family == "hppm":
+            got = np.asarray(
+                ppm_advect_uniform(
+                    data["con_in"].astype(dtype),
+                    data["vel_in"].astype(dtype)[:, None],
+                    dtype(data["dt"]),
+                    dtype(data["ds"]),
+                )
+            )
+            expected, scale_from = data["con_out"], data["con_out"]
+
+        elif family == "coeffs":
+            parabola = ppm_parabola_nonuniform(
+                data["cn"].astype(dtype), nonuniform_mesh(data["ds"].astype(dtype))
+            )
+            got = np.concatenate(
+                [np.asarray(getattr(parabola, f)) for f in ("cl", "cr", "dc", "c6")]
+            )
+            expected = np.concatenate([data[f] for f in ("cl", "cr", "dc", "c6")])
+            scale_from = data["cn"]
+
+        elif family == "zfdbc":
+            got = np.asarray(zfdbc(*(data[k].astype(dtype) for k in ("c1", "c2", "v1", "v2"))))
+            expected, scale_from = data["result"], data["result"]
+
+        else:  # hadv -- the whole driver
+            cgrid = data["cgrid_in"].astype(dtype)
+            ncols, nrows, nlays, nspc = cgrid.shape
+            cfg = GridConfig(
+                ncols=ncols,
+                nrows=nrows,
+                ds=np.full(nlays, 1.0 / nlays),
+                dx1=float(data["xcell"]),
+                dx2=float(data["ycell"]),
+                nspc_adv=nspc,
+                dtype="float32" if dtype is np.float32 else "float64",
+            )
+            flat = data["bcon"].astype(dtype).transpose(0, 2, 1)
+            bcon = BoundaryConditions(
+                south=flat[0:ncols],
+                east=flat[ncols + 1 : ncols + 1 + nrows],
+                north=flat[ncols + nrows + 3 : 2 * ncols + nrows + 3],
+                west=flat[2 * ncols + nrows + 4 : 2 * ncols + 2 * nrows + 4],
+            )
+
+            def secs(v: int) -> int:
+                return (int(v) // 10000) * 3600 + (int(v) // 100 % 100) * 60 + int(v) % 100
+
+            astep = np.array([secs(a) for a in data["astep"]])
+            phase = (True,) * nlays
+            for _ in range(int(data["ncalls"])):
+                cgrid, phase = hadv(
+                    cgrid,
+                    face_velocity(data["uwindc"].astype(dtype), axis=0),
+                    face_velocity(data["vwindc"].astype(dtype), axis=1),
+                    bcon,
+                    cfg=cfg,
+                    astep_seconds=astep,
+                    sync_seconds=secs(data["tstep"][1]),
+                    xyfirst=phase,
+                )
+            got = np.asarray(cgrid)
+            expected, scale_from = data["cgrid_out"], data["cgrid_out"]
+
+        scale = max(float(np.abs(scale_from).max()), 1.0)
+        out[name] = (
+            float(
+                np.abs(
+                    downcast_to_real4(got).astype(np.float64) - expected.astype(np.float64)
+                ).max()
+            )
+            / scale
+        )
+    return out
+
+
+def figure_precision() -> None:
+    """Agreement with the Fortran in both working precisions, across the port.
+
+    float32 is CMAQ's own precision and the likeliest choice on a GPU, so it is
+    a supported compute path rather than only a comparison target. Plotting both
+    shows that choosing it costs nothing in fidelity against the reference.
+    """
+    families = [
+        ("hppm", "hppm.F\n1-D PPM sweep"),
+        ("coeffs", "vppm.F PPM\nnon-uniform coefficients"),
+        ("zfdbc", "zfdbc.f\noutflow condition"),
+        ("hadv", "hadvppm.F\nfull driver"),
+    ]
+    floor = 1e-9
+
+    fig, axes = plt.subplots(1, 4, figsize=(19, 4.6), layout="constrained")
+    for ax, (family, title) in zip(axes, families, strict=True):
+        f32 = _errors_for(family, np.float32)
+        f64 = _errors_for(family, np.float64)
+        names = list(f32)
+        pos = np.arange(len(names))
+
+        ax.bar(
+            pos - 0.2, [max(f32[n], floor) for n in names], 0.4, label="float32", color="#1b6ca8"
+        )
+        ax.bar(
+            pos + 0.2, [max(f64[n], floor) for n in names], 0.4, label="float64", color="#e07a5f"
+        )
+        ax.axhline(EPS32, color="#d1495b", ls="--", lw=1.2)
+        ax.text(
+            len(names) - 0.4, EPS32 * 1.15, "1 float32 ULP", fontsize=7, ha="right", color="#d1495b"
+        )
+
+        ax.set_yscale("log")
+        ax.set_ylim(floor * 0.5, 2e-6)
+        ax.set_xticks(pos)
+        ax.set_xticklabels(names, rotation=45, ha="right", fontsize=7)
+        worst = max(*f32.values(), *f64.values())
+        ax.set_title(f"{title}\nworst {worst / EPS32:.1f} ULP32", fontsize=9)
+        ax.grid(axis="y", alpha=0.25, which="both")
+    axes[0].set_ylabel("max relative difference from CMAQ")
+    axes[0].legend(fontsize=8, loc="upper left")
+
+    fig.suptitle(
+        "Agreement with the Fortran in both working precisions. Bars at the floor are "
+        "bit-identical.\nNative float32 is frequently *closer* to the reference than "
+        "float64-then-downcast -- it does the same arithmetic in the\nsame precision, rather than "
+        "computing more accurately and rounding to a different nearby value. Choosing CMAQ's own\n"
+        "precision on a GPU therefore costs nothing in fidelity.",
+        fontsize=10,
+    )
+    _save(fig, "precision")
+
+
 def main() -> None:
     figure_rotation_driver()
     figure_periodic_vs_driver()
+    figure_precision()
 
 
 if __name__ == "__main__":

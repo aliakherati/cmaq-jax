@@ -94,6 +94,7 @@ Regenerate with `python scripts/make_a1_figures.py`.
 | File | What it shows |
 |---|---|
 | [`rotation_driver.png`](docs/figures/a1/rotation_driver.png) | Solid-body rotation through `hadv_step`, with boundary conditions, the X-Y/Y-X alternation and the ρ·J ride-along all active. Phase error 0.006 cells, mass conserved to 1e-10, ρ·J held at 1.0 with zero drift under a discretely non-divergent wind. |
+| [`precision.png`](docs/figures/a1/precision.png) | Agreement with the Fortran in **both** working precisions across all four golden families. Native float32 is frequently closer to the reference than float64-then-downcast, since it does the same arithmetic in the same precision. Worst case anywhere: 4.8 float32 ULPs. |
 | [`periodic_vs_driver.png`](docs/figures/a1/periodic_vs_driver.png) | The same rotation under a periodic halo and under the driver's real boundaries. Bit-identical for the first few steps, diverging to 2.5e-8 over a full turn once diffusion spreads a tail to the edge — so the A0 figures were not misleading about the interior, and this is the scale of what they left out. |
 
 **A0 — what the scheme does to a field**
