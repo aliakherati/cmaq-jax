@@ -88,6 +88,9 @@ regenerable via `scripts/make_<chunk>_figures.py`.
 
 **A0 — what the scheme does to a field**
 
+Each figure is described in detail, with what to look for, in
+[`docs/figures/a0/README.md`](docs/figures/a0/README.md).
+
 The two benchmarks anyone working with transport schemes will recognise, run
 with the A0 kernel applied alternately along each axis. Regenerate with
 `python scripts/make_a0_flow_figures.py`.
