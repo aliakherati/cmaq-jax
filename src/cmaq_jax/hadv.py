@@ -17,6 +17,7 @@ that a property test cannot see:
 from __future__ import annotations
 
 from collections import defaultdict
+from collections.abc import Sequence
 from typing import NamedTuple
 
 import jax.numpy as jnp
@@ -28,7 +29,7 @@ from cmaq_jax.bc import fill_halo
 from cmaq_jax.config import DEFAULT_PPM, GridConfig, PPMConstants
 from cmaq_jax.ppm import ppm_advect_uniform
 
-__all__ = ["BoundaryConditions", "hadv", "sweep"]
+__all__ = ["BoundaryConditions", "advance_xyfirst", "hadv", "hadv_step", "sweep"]
 
 COLUMN_AXIS = 0
 ROW_AXIS = 1
@@ -148,7 +149,52 @@ def _sweep_pair(
     return cgrid
 
 
-def hadv(
+def _layer_groups(
+    nlays: int,
+    astep_seconds: NDArray[np.integer],
+    sync_seconds: int,
+    xyfirst: Sequence[bool],
+) -> dict[tuple[int, bool], list[int]]:
+    """Partition layers by ``(sub-step count, starting sweep order)``.
+
+    Both keys are host-side and static, so each group can run a plain loop of
+    sweeps. Carrying the per-layer flag into the kernel instead would mean
+    computing both sweep orders everywhere and selecting between them, which
+    doubles the work to no purpose.
+    """
+    astep = np.asarray(astep_seconds, dtype=np.int64)
+    if astep.shape != (nlays,):
+        raise ValueError(f"astep_seconds must have one entry per layer, got {astep.shape}")
+    if len(xyfirst) != nlays:
+        raise ValueError(f"xyfirst must have one entry per layer, got {len(xyfirst)}")
+
+    groups: dict[tuple[int, bool], list[int]] = defaultdict(list)
+    for layer in range(nlays):
+        key = (_substep_count(sync_seconds, int(astep[layer])), bool(xyfirst[layer]))
+        groups[key].append(layer)
+    return groups
+
+
+def advance_xyfirst(
+    xyfirst: Sequence[bool],
+    astep_seconds: NDArray[np.integer],
+    sync_seconds: int,
+) -> tuple[bool, ...]:
+    """The alternation flags after one sync step.
+
+    ``hadvppm.F`` flips ``XYFIRST(LVL)`` inside the sub-step loop (line 215,
+    under label 101), **not** once per call. A layer taking two sub-steps
+    therefore sweeps X-Y then Y-X within a single call and ends where it
+    started, so the flag advances by the parity of the sub-step count.
+    """
+    astep = np.asarray(astep_seconds, dtype=np.int64)
+    return tuple(
+        bool(first) != (_substep_count(sync_seconds, int(step)) % 2 == 1)
+        for first, step in zip(xyfirst, astep, strict=True)
+    )
+
+
+def hadv_step(
     cgrid: Array,
     uhat: Array,
     vhat: Array,
@@ -157,24 +203,23 @@ def hadv(
     cfg: GridConfig,
     astep_seconds: NDArray[np.integer],
     sync_seconds: int,
-    xyfirst: NDArray[np.bool_],
-) -> tuple[Array, NDArray[np.bool_]]:
+    xyfirst: Sequence[bool],
+) -> Array:
     """Advance one sync step of horizontal advection.
 
     Ports ``HADV`` (``hadvppm.F``). ``cgrid`` is ``(ncols, nrows, nlays, nspc)``
     in coupled transport units, with the last species slot holding rho*J.
 
-    ``astep_seconds`` gives each layer its own advection step, and
-    ``sync_seconds`` the step they all have to reach. ``xyfirst`` is the saved
-    alternation flag, one per layer; the updated copy comes back with the
-    result, since CMAQ keeps it in a ``SAVE``d array across calls and the
-    sequence of orders is part of the answer.
+    Everything except the four array arguments is host-side configuration, so
+    this is a pure function of them and can be wrapped directly::
 
-    Layers are grouped by ``(sub-step count, starting sweep order)`` -- both
-    host-side, both static -- so each group runs a plain Python loop of sweeps
-    with no masking and no ``lax.while_loop``. The alternative, carrying a
-    per-layer flag into the kernel, would mean computing both sweep orders
-    everywhere and selecting, which doubles the work to no purpose.
+        step = jax.jit(functools.partial(
+            hadv_step, cfg=cfg, astep_seconds=astep,
+            sync_seconds=sync, xyfirst=(True,) * nlays))
+
+    Without that, the many small operations in a sweep are dispatch-bound and
+    the step costs far more than the arithmetic in it. Use :func:`advance_xyfirst`
+    to carry the alternation flags forward between steps.
 
     The wind is taken as fixed across the sync step. CMAQ re-reads it at each
     sub-step's midpoint, but that is time interpolation inside the met reader
@@ -182,20 +227,12 @@ def hadv(
     """
     cgrid = jnp.asarray(cgrid)
     nlays = cgrid.shape[2]
-
     astep = np.asarray(astep_seconds, dtype=np.int64)
-    order = np.asarray(xyfirst, dtype=bool).copy()
-    if astep.shape != (nlays,):
-        raise ValueError(f"astep_seconds must have one entry per layer, got {astep.shape}")
-    if order.shape != (nlays,):
-        raise ValueError(f"xyfirst must have one entry per layer, got {order.shape}")
-
-    groups: dict[tuple[int, bool], list[int]] = defaultdict(list)
-    for layer in range(nlays):
-        groups[(_substep_count(sync_seconds, int(astep[layer])), bool(order[layer]))].append(layer)
 
     result = cgrid
-    for (nsub, starts_with_x), layers in sorted(groups.items()):
+    for (nsub, starts_with_x), layers in sorted(
+        _layer_groups(nlays, astep, sync_seconds, xyfirst).items()
+    ):
         index = np.asarray(layers)
         block = result[:, :, index, :]
         block_bcon = BoundaryConditions(
@@ -217,12 +254,41 @@ def hadv(
                 dt=dt,
                 x_first=x_first,
             )
-            # hadvppm.F flips the flag inside the sub-step loop, not once per
-            # call, so a layer taking two sub-steps sweeps X-Y then Y-X and
-            # comes back to where it started.
             x_first = not x_first
 
         result = result.at[:, :, index, :].set(block)
-        order[index] = x_first
 
-    return result, order
+    return result
+
+
+def hadv(
+    cgrid: Array,
+    uhat: Array,
+    vhat: Array,
+    bcon: BoundaryConditions,
+    *,
+    cfg: GridConfig,
+    astep_seconds: NDArray[np.integer],
+    sync_seconds: int,
+    xyfirst: Sequence[bool],
+) -> tuple[Array, tuple[bool, ...]]:
+    """One sync step, returning the advected grid and the updated flags.
+
+    A convenience wrapper over :func:`hadv_step` and :func:`advance_xyfirst`.
+    They are separate because the flags are host-side control state, not data:
+    returning them from a single function is exactly what would stop it being
+    wrapped in ``jax.jit``.
+    """
+    return (
+        hadv_step(
+            cgrid,
+            uhat,
+            vhat,
+            bcon,
+            cfg=cfg,
+            astep_seconds=astep_seconds,
+            sync_seconds=sync_seconds,
+            xyfirst=xyfirst,
+        ),
+        advance_xyfirst(xyfirst, astep_seconds, sync_seconds),
+    )

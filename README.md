@@ -86,6 +86,16 @@ regenerable via `scripts/make_<chunk>_figures.py`.
 | [`transport.png`](docs/figures/a0/transport.png) | A Gaussian and a square wave after one full revolution (400 steps). The Gaussian loses 0.9% of its peak to numerical diffusion; the square wave keeps full amplitude with no undershoot below zero or overshoot above one. |
 | [`vertical_stretching.png`](docs/figures/a0/vertical_stretching.png) | The non-uniform reconstruction on 35 CMAQ-like sigma layers, 6× thicker aloft than at the surface, with the resulting edge values, slope and curvature. |
 
+**A1 — through the real driver**
+
+Described in [`docs/figures/a1/README.md`](docs/figures/a1/README.md).
+Regenerate with `python scripts/make_a1_figures.py`.
+
+| File | What it shows |
+|---|---|
+| [`rotation_driver.png`](docs/figures/a1/rotation_driver.png) | Solid-body rotation through `hadv_step`, with boundary conditions, the X-Y/Y-X alternation and the ρ·J ride-along all active. Phase error 0.006 cells, mass conserved to 1e-10, ρ·J held at 1.0 with zero drift under a discretely non-divergent wind. |
+| [`periodic_vs_driver.png`](docs/figures/a1/periodic_vs_driver.png) | The same rotation under a periodic halo and under the driver's real boundaries. Bit-identical for the first few steps, diverging to 2.5e-8 over a full turn once diffusion spreads a tail to the edge — so the A0 figures were not misleading about the interior, and this is the scale of what they left out. |
+
 **A0 — what the scheme does to a field**
 
 Each figure is described in detail, with what to look for, in

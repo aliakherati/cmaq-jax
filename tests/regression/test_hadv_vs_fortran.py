@@ -81,7 +81,7 @@ def _run(golden: dict[str, Any]) -> np.ndarray:
     astep = np.array([_hhmmss_to_seconds(a) for a in golden["astep"]])
     sync = _hhmmss_to_seconds(golden["tstep"][1])
     # hadvppm.F's XYFIRST is a SAVEd array initialised .TRUE. on first call.
-    xyfirst = np.ones(nlays, dtype=bool)
+    xyfirst = (True,) * nlays
 
     for _ in range(int(golden["ncalls"])):
         cgrid, xyfirst = hadv(
@@ -196,7 +196,7 @@ def test_constancy_through_both_sweeps() -> None:
         cfg=cfg,
         astep_seconds=np.full(nlays, 180),
         sync_seconds=180,
-        xyfirst=np.ones(nlays, dtype=bool),
+        xyfirst=(True,) * nlays,
     )
     out = np.asarray(out)
 

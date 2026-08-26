@@ -85,8 +85,23 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   `(sub-step count, starting order)` so each group is a plain loop of sweeps —
   no masking, no `lax.while_loop`. Matches all 8 driver goldens to under one
   float32 ULP (worst case 1.05e-7).
+- **A1.6** — `tests/properties/test_hadv_properties.py`: scheme properties
+  through the real driver rather than the bare kernel — solid-body rotation,
+  inflow/outflow behaviour, constancy over 60 steps, and layer independence
+  under mixed `ASTEP`.
+- **A1.7** — `scripts/make_a1_figures.py` and `docs/figures/a1/`: the rotation
+  benchmark re-run through `hadv_step`, plus a side-by-side against the A0
+  periodic-halo version showing they are bit-identical at first and diverge to
+  2.5e-8 over a full turn.
 
 ### Changed
+
+- `hadv` split into `hadv_step` (pure, jittable) and `advance_xyfirst`
+  (host-side flag bookkeeping). Returning both from one function was what
+  blocked `jax.jit`; wrapping the split version gives a **1134x** speed-up
+  (66.5 ms/step to 0.06 ms/step), the whole difference being dispatch overhead.
+  `xyfirst` is now a `tuple[bool, ...]` rather than an ndarray, since it is
+  control state rather than data.
 
 - mypy `python_version` set to 3.12: numpy >= 2.5 ships PEP 695 `type`
   statements in its stubs that mypy cannot parse under 3.11. Runtime support for
