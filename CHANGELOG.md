@@ -93,6 +93,10 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   benchmark re-run through `hadv_step`, plus a side-by-side against the A0
   periodic-halo version showing they are bit-identical at first and diverge to
   2.5e-8 over a full turn.
+- **A2.2/A2.3** — `cmaq_jax.vadv`: the vertical column solve and its
+  flux-matching velocity adjustment, porting `vppm.F`. Matches all 7 `vppm`
+  goldens — concentrations to 0.4 float32 ULPs, adjusted velocities to 1.9 —
+  in both precisions.
 
 ### Changed
 
