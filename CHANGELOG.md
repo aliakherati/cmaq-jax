@@ -22,6 +22,16 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   Constants used only by `advstep` are deliberately deferred to A3.1 rather than
   guessed.
 
+- **A0.3** — Fortran golden harness: `reference/harness/stubs.f90` supplies the
+  handful of CMAQ symbols the kernels need (`M3EXIT`, `BUDGET_HPPM`,
+  `SUBST_HI_LO_BND_PE`, the `CGRID_SPCS` counts), so `hppm.F` and `vppm.F`
+  compile **unmodified** with no I/O API, netCDF, or MPI.
+- **A0.4** — `scripts/generate_goldens.py` with a `--check` drift mode, and 17
+  committed goldens under `data/goldens/` (10 HPPM, 7 VPPM). Each case runs in
+  its own process to avoid the kernels' `SAVE`d first-call array sizing.
+  `tests/regression/test_goldens.py` guards the harness itself: shapes,
+  positivity, monotonicity, an untouched halo, and constancy preservation.
+
 ### Changed
 
 - mypy `python_version` set to 3.12: numpy >= 2.5 ships PEP 695 `type`
