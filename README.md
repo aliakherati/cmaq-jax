@@ -17,8 +17,14 @@ Multiscale Air Quality model.
 
 ## Status
 
-**Early alpha — scaffolding.** Repository created, Fortran reference vendored,
-plan hierarchy in place. No public API yet; modules land chunk by chunk.
+**Phase A0 complete.** The two 1-D PPM kernels are ported and validated against
+the CMAQ Fortran; the golden harness and property suite are in place. Next is
+A1 (horizontal advection: boundary conditions, contravariant velocity, sweeps).
+
+Agreement with CMAQ, after downcasting to float32: the uniform-spacing sweep
+matches `hppm.F` to a worst case of 1.7 float32 ULPs across ten cases, three of
+them bit-identical. The non-uniform reconstruction matches `vppm.F`'s inner
+`PPM` to 0.8 / 0.8 / 1.6 / 4.6 ULPs for `cl` / `cr` / `dc` / `c6`.
 
 ## Scope
 
