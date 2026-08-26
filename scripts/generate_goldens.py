@@ -413,6 +413,78 @@ def ppm_coeff_cases() -> list[PpmCoeffCase]:
     return cases
 
 
+@dataclass(frozen=True)
+class ZfdbcCase:
+    """A batch of calls to ZFDBC, the zero-flux-divergence outflow condition."""
+
+    name: str
+    c1: NDArray[np.float32]
+    c2: NDArray[np.float32]
+    v1: NDArray[np.float32]
+    v2: NDArray[np.float32]
+    note: str = ""
+
+    @property
+    def ncase(self) -> int:
+        return int(self.c1.size)
+
+    def __post_init__(self) -> None:
+        shape = self.c1.shape
+        assert self.c2.shape == shape and self.v1.shape == shape, self.name
+        assert self.v2.shape == shape, self.name
+
+
+def zfdbc_cases() -> list[ZfdbcCase]:
+    """Cover every branch of zfdbc.f, including both sides of its SMALL cutoff.
+
+    The function has three outcomes (``zfdbc.f:32-40``):
+
+    * ``|v1| < 1e-3``           -> pass the edge value through unchanged
+    * ``v1*v2 <= 0`` (diverging) -> likewise unchanged
+    * otherwise                  -> extrapolate, clamped at zero
+
+    The clamp matters: without it an outflow boundary can manufacture negative
+    concentrations, so cases below deliberately drive the extrapolation
+    negative.
+    """
+    small = 1.0e-3
+    rng = np.random.default_rng(20260830)
+
+    # Structured corners: every sign combination, plus the cutoff itself.
+    speeds = np.array(
+        [-5.0, -1.0, -small * 2, -small, -small / 2, 0.0, small / 2, small, small * 2, 1.0, 5.0]
+    )
+    v1_grid, v2_grid = np.meshgrid(speeds, speeds, indexing="ij")
+    v1_corner = v1_grid.ravel()
+    v2_corner = v2_grid.ravel()
+    # Gradients that extrapolate up, down, flat, and hard enough to go negative.
+    gradients = np.array([0.0, 0.5, -0.5, 3.0, -3.0, 20.0])
+    c1_corner = np.tile(np.full(v1_corner.size, 1.0), gradients.size)
+    c2_corner = np.concatenate([np.full(v1_corner.size, 1.0) + g for g in gradients])
+    v1_corner = np.tile(v1_corner, gradients.size)
+    v2_corner = np.tile(v2_corner, gradients.size)
+
+    n_random = 2000
+    return [
+        ZfdbcCase(
+            name="branch_corners",
+            c1=c1_corner.astype(F32),
+            c2=c2_corner.astype(F32),
+            v1=v1_corner.astype(F32),
+            v2=v2_corner.astype(F32),
+            note="every sign combination x gradient, incl. the SMALL cutoff exactly",
+        ),
+        ZfdbcCase(
+            name="random_sweep",
+            c1=(rng.random(n_random) * 10.0).astype(F32),
+            c2=(rng.random(n_random) * 10.0).astype(F32),
+            v1=((rng.random(n_random) - 0.5) * 4.0).astype(F32),
+            v2=((rng.random(n_random) - 0.5) * 4.0).astype(F32),
+            note="broad random coverage of the three-way branch",
+        ),
+    ]
+
+
 # --------------------------------------------------------------------------
 # Running the harness
 # --------------------------------------------------------------------------
@@ -513,6 +585,18 @@ def run_ppm_coeffs(case: PpmCoeffCase, workdir: Path) -> dict[str, NDArray[np.fl
     return {"cr": cr.copy(), "cl": cl.copy(), "dc": dc.copy(), "c6": c6.copy()}
 
 
+def run_zfdbc(case: ZfdbcCase, workdir: Path) -> dict[str, NDArray[np.float32]]:
+    payload = struct.pack("<i", case.ncase) + b"".join(
+        arr.astype(F32).tobytes(**_f()) for arr in (case.c1, case.c2, case.v1, case.v2)
+    )
+    raw = _run(BUILD / "harness_zfdbc", payload, workdir)
+
+    expected = case.ncase * 4
+    if len(raw) != expected:
+        raise RuntimeError(f"{case.name}: got {len(raw)} output bytes, expected {expected}")
+    return {"result": np.frombuffer(raw, dtype=F32).copy()}
+
+
 # --------------------------------------------------------------------------
 # Golden files
 # --------------------------------------------------------------------------
@@ -558,6 +642,16 @@ def ppm_coeff_golden(case: PpmCoeffCase, workdir: Path) -> dict[str, NDArray[np.
     }
 
 
+def zfdbc_golden(case: ZfdbcCase, workdir: Path) -> dict[str, NDArray[np.generic]]:
+    return {
+        "c1": case.c1,
+        "c2": case.c2,
+        "v1": case.v1,
+        "v2": case.v2,
+        **run_zfdbc(case, workdir),
+    }
+
+
 @dataclass
 class Result:
     written: list[str] = field(default_factory=list)
@@ -579,6 +673,8 @@ def generate(check: bool) -> Result:
             work.append((f"vppm_{vcase.name}", vppm_golden(vcase, workdir)))
         for ccase in ppm_coeff_cases():
             work.append((f"coeffs_{ccase.name}", ppm_coeff_golden(ccase, workdir)))
+        for zcase in zfdbc_cases():
+            work.append((f"zfdbc_{zcase.name}", zfdbc_golden(zcase, workdir)))
 
     for name, arrays in work:
         path = GOLDENS / f"{name}.npz"

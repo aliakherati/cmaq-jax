@@ -55,6 +55,14 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   and deformational swirl (LeVeque) as static panels, a 3-D surface view, and
   two animated GIFs. Measured on the rotation: phase error 0.003 cells, slot
   23% filled, cone peak −8%, mass conserved to 7e-13, undershoot 1e-32.
+- **A1.1** — `cmaq_jax.bc.zfdbc`: branchless zero-flux-divergence outflow
+  boundary condition, porting `zfdbc.f`. Validated against a new Fortran harness
+  over 2,726 cases covering all three branches (198+1 small-wind, 1,330
+  diverging, 1,197 extrapolating, of which 296 hit the zero clamp).
+- **A1.2** — `cmaq_jax.bc.fill_halo`: ghost-cell fill, BCON on inflow and
+  `zfdbc` on outflow per edge, porting `x_ppm.F:418-441`. The halo stays a
+  first-class array region so `shard_map` can later swap the local fill for a
+  collective permute without touching the kernels.
 
 ### Changed
 
