@@ -485,6 +485,257 @@ def zfdbc_cases() -> list[ZfdbcCase]:
     ]
 
 
+@dataclass(frozen=True)
+class HadvCase:
+    """One or more calls to HADV, CMAQ's whole horizontal-advection driver.
+
+    Unlike the kernel cases this exercises the driver chain end to end:
+    per-layer sub-stepping, the X-Y/Y-X alternation, both boundary conditions
+    and both sweeps.
+    """
+
+    name: str
+    cgrid: NDArray[np.float32]  # (ncols, nrows, nlays, ntrns+1); last slot rho*J
+    uwindc: NDArray[np.float32]  # (ncols+1, nrows, nlays)
+    vwindc: NDArray[np.float32]  # (ncols, nrows+1, nlays)
+    bcon: NDArray[np.float32]  # (nbndy, ntrns+1, nlays)
+    astep: NDArray[np.int32]  # (nlays,) HHMMSS
+    tstep: tuple[int, int, int] = (10000, 300, 0)
+    ncalls: int = 1
+    jdate: int = 2018182
+    jtime: int = 120000
+    xcell: float = 12000.0
+    ycell: float = 12000.0
+    note: str = ""
+
+    @property
+    def shape(self) -> tuple[int, int, int, int]:
+        ncols, nrows, nlays, nspc = self.cgrid.shape
+        return ncols, nrows, nlays, nspc
+
+    def __post_init__(self) -> None:
+        ncols, nrows, nlays, nspc = self.shape
+        assert self.uwindc.shape == (ncols + 1, nrows, nlays), self.name
+        assert self.vwindc.shape == (ncols, nrows + 1, nlays), self.name
+        assert self.bcon.shape == (bndy_size(ncols, nrows), nspc, nlays), self.name
+        assert self.astep.shape == (nlays,), self.name
+
+
+def bndy_size(ncols: int, nrows: int, nthik: int = 1) -> int:
+    """Length of CMAQ's boundary ring.
+
+    ``HGRD_DEFN``: ``NBNDY = 2*NTHIK*(NCOLS + NROWS + 2*NTHIK)``.
+    """
+    return 2 * nthik * (ncols + nrows + 2 * nthik)
+
+
+def bndy_slices(ncols: int, nrows: int) -> dict[str, slice]:
+    """Where each edge lives in the boundary ring, as 0-based Python slices.
+
+    CMAQ indexes the ring through per-edge offsets rather than named blocks:
+    ``SFX = 0`` and ``NFX = NCOLS+NROWS+3`` (``y_ppm.F:203``), ``EFX = NCOLS+1``
+    and ``WFX = 2*NCOLS+NROWS+4`` (``x_ppm.F:208``), each added to a 1-based
+    column or row index. Converting once here keeps that arithmetic in one
+    place.
+    """
+    return {
+        "south": slice(0, ncols),
+        "east": slice(ncols + 1, ncols + 1 + nrows),
+        "north": slice(ncols + nrows + 3, 2 * ncols + nrows + 3),
+        "west": slice(2 * ncols + nrows + 4, 2 * ncols + 2 * nrows + 4),
+    }
+
+
+def hadv_cases() -> list[HadvCase]:
+    """Driver cases, chosen for what only the driver can exercise."""
+    ncols, nrows = 8, 6
+    rng = np.random.default_rng(20260831)
+    cases: list[HadvCase] = []
+
+    def build(
+        name: str,
+        *,
+        nlays: int,
+        ntrns: int,
+        u: NDArray[np.float64],
+        v: NDArray[np.float64],
+        astep: list[int],
+        ncalls: int = 1,
+        coupled_q: list[float] | None = None,
+        note: str = "",
+    ) -> HadvCase:
+        nspc = ntrns + 1
+        rhoj = 1.5 + 0.4 * rng.random((ncols, nrows, nlays))
+        if coupled_q is None:
+            # Independent tracer fields, with a blob to make transport visible.
+            layers = [1.0 + rng.random((ncols, nrows, nlays)) for _ in range(ntrns)]
+            layers[0][ncols // 2, nrows // 2, :] += 6.0
+            cgrid = np.stack([*layers, rhoj], axis=-1)
+            bcon = np.zeros((bndy_size(ncols, nrows), nspc, nlays))
+            bcon[:, :ntrns, :] = 1.0
+            bcon[:, ntrns, :] = 2.0
+        else:
+            # Coupled units with a uniform mixing ratio, boundary included, so
+            # constancy preservation is actually testable.
+            cgrid = np.stack([q * rhoj for q in coupled_q] + [rhoj], axis=-1)
+            rhoj_bndy = 2.0
+            bcon = np.zeros((bndy_size(ncols, nrows), nspc, nlays))
+            for idx, q in enumerate(coupled_q):
+                bcon[:, idx, :] = q * rhoj_bndy
+            bcon[:, ntrns, :] = rhoj_bndy
+
+        return HadvCase(
+            name=name,
+            cgrid=cgrid.astype(F32),
+            uwindc=u.astype(F32),
+            vwindc=v.astype(F32),
+            bcon=bcon.astype(F32),
+            astep=np.array(astep, dtype=np.int32),
+            ncalls=ncalls,
+            note=note,
+        )
+
+    def uniform(nlays: int, speed_u: float, speed_v: float):
+        return (
+            np.full((ncols + 1, nrows, nlays), speed_u),
+            np.full((ncols, nrows + 1, nlays), speed_v),
+        )
+
+    # Courant = speed * 180 s / 12000 m; 25 m/s gives 0.375.
+    u1, v1 = uniform(1, 25.0, 18.0)
+    cases.append(
+        build(
+            "uniform_wind",
+            nlays=1,
+            ntrns=2,
+            u=u1,
+            v=v1,
+            astep=[300],
+            note="both sweeps, inflow on west and south, outflow on east and north",
+        )
+    )
+
+    cases.append(
+        build(
+            "outflow_all_edges",
+            nlays=1,
+            ntrns=2,
+            u=np.concatenate(
+                [
+                    np.full((ncols // 2 + 1, nrows, 1), -20.0),
+                    np.full((ncols - ncols // 2, nrows, 1), 20.0),
+                ]
+            ),
+            v=np.concatenate(
+                [
+                    np.full((ncols, nrows // 2 + 1, 1), -15.0),
+                    np.full((ncols, nrows - nrows // 2, 1), 15.0),
+                ],
+                axis=1,
+            ),
+            astep=[300],
+            note="wind out of every edge: the zfdbc branch on all four sides",
+        )
+    )
+
+    cases.append(
+        build(
+            "inflow_all_edges",
+            nlays=1,
+            ntrns=2,
+            u=np.concatenate(
+                [
+                    np.full((ncols // 2 + 1, nrows, 1), 20.0),
+                    np.full((ncols - ncols // 2, nrows, 1), -20.0),
+                ]
+            ),
+            v=np.concatenate(
+                [
+                    np.full((ncols, nrows // 2 + 1, 1), 15.0),
+                    np.full((ncols, nrows - nrows // 2, 1), -15.0),
+                ],
+                axis=1,
+            ),
+            astep=[300],
+            note="wind into every edge: the BCON branch on all four sides",
+        )
+    )
+
+    # Sub-stepping: ASTEP 130 is 90 s against a 180 s sync step, so two passes.
+    u2, v2 = uniform(1, 25.0, 18.0)
+    cases.append(
+        build(
+            "substepped",
+            nlays=1,
+            ntrns=2,
+            u=u2,
+            v=v2,
+            astep=[130],
+            note="two advection sub-steps per sync step",
+        )
+    )
+
+    # Layer 0 sub-steps, layer 1 does not -- the layers must stay independent.
+    u3, v3 = uniform(2, 25.0, 18.0)
+    cases.append(
+        build(
+            "mixed_layer_astep",
+            nlays=2,
+            ntrns=2,
+            u=u3,
+            v=v3,
+            astep=[130, 300],
+            note="per-layer ASTEP: layer 0 sub-steps, layer 1 does not",
+        )
+    )
+
+    # Two calls flip XYFIRST, so the second sweeps Y before X.
+    u4, v4 = uniform(1, 25.0, 18.0)
+    cases.append(
+        build(
+            "xy_alternation",
+            nlays=1,
+            ntrns=2,
+            u=u4,
+            v=v4,
+            astep=[300],
+            ncalls=2,
+            note="X-Y on the first call, Y-X on the second (hadvppm.F XYFIRST)",
+        )
+    )
+
+    # Divergent wind, uniform mixing ratio, boundary consistent.
+    theta_u = np.linspace(0.0, 2.0 * np.pi, ncols + 1)
+    theta_v = np.linspace(0.0, 2.0 * np.pi, nrows + 1)
+    cases.append(
+        build(
+            "constancy_divergent",
+            nlays=2,
+            ntrns=2,
+            u=20.0 * np.sin(theta_u)[:, None, None] * np.ones((1, nrows, 2)),
+            v=15.0 * np.cos(theta_v)[None, :, None] * np.ones((ncols, 1, 2)),
+            astep=[300, 300],
+            coupled_q=[1.0, 3.0],
+            note="coupled units, divergent wind; q must survive both sweeps",
+        )
+    )
+
+    u5, v5 = uniform(1, 32.0, 0.0)
+    cases.append(
+        build(
+            "single_species",
+            nlays=1,
+            ntrns=1,
+            u=u5,
+            v=v5,
+            astep=[300],
+            note="ntrns = 1: the smallest species layout the driver accepts",
+        )
+    )
+
+    return cases
+
+
 # --------------------------------------------------------------------------
 # Running the harness
 # --------------------------------------------------------------------------
@@ -597,6 +848,28 @@ def run_zfdbc(case: ZfdbcCase, workdir: Path) -> dict[str, NDArray[np.float32]]:
     return {"result": np.frombuffer(raw, dtype=F32).copy()}
 
 
+def run_hadv(case: HadvCase, workdir: Path) -> dict[str, NDArray[np.float32]]:
+    ncols, nrows, nlays, nspc = case.shape
+    payload = (
+        struct.pack("<4i", ncols, nrows, nlays, nspc - 1)
+        + struct.pack("<i", case.ncalls)
+        + struct.pack("<2i", case.jdate, case.jtime)
+        + struct.pack("<3i", *case.tstep)
+        + case.astep.astype(np.int32).tobytes(**_f())
+        + struct.pack("<2f", case.xcell, case.ycell)
+        + case.uwindc.astype(F32).tobytes(**_f())
+        + case.vwindc.astype(F32).tobytes(**_f())
+        + case.bcon.astype(F32).tobytes(**_f())
+        + case.cgrid.astype(F32).tobytes(**_f())
+    )
+    raw = _run(BUILD / "harness_hadv", payload, workdir)
+
+    expected = case.cgrid.size * 4
+    if len(raw) != expected:
+        raise RuntimeError(f"{case.name}: got {len(raw)} output bytes, expected {expected}")
+    return {"cgrid_out": np.frombuffer(raw, dtype=F32).reshape(case.cgrid.shape, order="F").copy()}
+
+
 # --------------------------------------------------------------------------
 # Golden files
 # --------------------------------------------------------------------------
@@ -652,6 +925,21 @@ def zfdbc_golden(case: ZfdbcCase, workdir: Path) -> dict[str, NDArray[np.generic
     }
 
 
+def hadv_golden(case: HadvCase, workdir: Path) -> dict[str, NDArray[np.generic]]:
+    return {
+        "cgrid_in": case.cgrid,
+        "uwindc": case.uwindc,
+        "vwindc": case.vwindc,
+        "bcon": case.bcon,
+        "astep": case.astep,
+        "tstep": np.array(case.tstep, dtype=np.int32),
+        "ncalls": np.int32(case.ncalls),
+        "xcell": np.float32(case.xcell),
+        "ycell": np.float32(case.ycell),
+        **run_hadv(case, workdir),
+    }
+
+
 @dataclass
 class Result:
     written: list[str] = field(default_factory=list)
@@ -675,6 +963,8 @@ def generate(check: bool) -> Result:
             work.append((f"coeffs_{ccase.name}", ppm_coeff_golden(ccase, workdir)))
         for zcase in zfdbc_cases():
             work.append((f"zfdbc_{zcase.name}", zfdbc_golden(zcase, workdir)))
+        for hcase in hadv_cases():
+            work.append((f"hadv_{hcase.name}", hadv_golden(hcase, workdir)))
 
     for name, arrays in work:
         path = GOLDENS / f"{name}.npz"

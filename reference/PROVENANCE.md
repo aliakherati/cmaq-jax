@@ -29,6 +29,38 @@ Source path prefix: `CCTM/src/`
 | `zadvppmwrf.F` | `vadv/wrf_cons/zadvppmwrf.F` | `b0f656667286184b` |
 | `zadvyppm.F` | `vadv/local_cons/zadvyppm.F` | `e62f8ab4a2e00822` |
 | `advstep.F` | `driver/advstep.F` | `e0bf8ca9479a0b49` |
+| `xy_budget.F` | `hadv/ppm/xy_budget.F` | `9f07de250262e4d2` |
+
+## Also vendored
+
+The serial stencil-exchange layer. CMAQ ships a no-op implementation for
+non-MPI builds, and the Makefile points the `SUBST_*` cpp macros at it exactly
+as `bldit_cctm.csh` does for a serial build -- so the halo-exchange calls inside
+`x_ppm.F` and `hcontvel.F` resolve to the real upstream no-ops rather than
+anything written here.
+
+| Vendored as | Upstream path | sha256 (first 16) |
+|---|---|---|
+| `stenex/noop_comm_module.f` | `STENEX/noop/noop_comm_module.f` | `8c2b0820cf43a9ad` |
+| `stenex/noop_data_copy_module.f` | `STENEX/noop/noop_data_copy_module.f` | `d6bd5ede5715acf2` |
+| `stenex/noop_gather_module.f` | `STENEX/noop/noop_gather_module.f` | `4166e90e9978a330` |
+| `stenex/noop_global_max_module.f` | `STENEX/noop/noop_global_max_module.f` | `678e2ab19a3bae39` |
+| `stenex/noop_global_min_module.f` | `STENEX/noop/noop_global_min_module.f` | `8a7806225c00d4f4` |
+| `stenex/noop_global_sum_module.f` | `STENEX/noop/noop_global_sum_module.f` | `be13dae612ef495d` |
+| `stenex/noop_init_module.f` | `STENEX/noop/noop_init_module.f` | `a1ebe01f2b0b3d33` |
+| `stenex/noop_modules.f` | `STENEX/noop/noop_modules.f` | `b87f58fd334e6730` |
+| `stenex/noop_slice_module.f` | `STENEX/noop/noop_slice_module.f` | `17b5cc9d6b0174d0` |
+| `stenex/noop_term_module.f` | `STENEX/noop/noop_term_module.f` | `90f74b8956edba79` |
+| `stenex/noop_util_module.f` | `STENEX/noop/noop_util_module.f` | `8ef30b9a6180fb75` |
+
+CMAQ include files, named by the `INCLUDE SUBST_*` cpp macros
+(`bldit_cctm.csh:506-508`).
+
+| Vendored as | Upstream path | sha256 (first 16) |
+|---|---|---|
+| `include/CONST.EXT` | `ICL/fixed/const/CONST.EXT` | `8a4de000b45b198a` |
+| `include/FILES_CTM.EXT` | `ICL/fixed/filenames/FILES_CTM.EXT` | `a31a9e9091431b46` |
+| `include/PE_COMM.EXT` | `ICL/fixed/mpi/PE_COMM.EXT` | `0da645006411c20e` |
 
 ## Notes
 

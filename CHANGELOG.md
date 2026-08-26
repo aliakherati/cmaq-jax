@@ -63,6 +63,17 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   `zfdbc` on outflow per edge, porting `x_ppm.F:418-441`. The halo stays a
   first-class array region so `shard_map` can later swap the local fill for a
   collective permute without touching the kernels.
+- **A1** — The horizontal-advection *driver* is now golden-tested. A new
+  `harness_hadv` runs `hadvppm.F` -> `x_ppm.F`/`y_ppm.F` -> `hcontvel.F` ->
+  `hppm.F` unmodified, with only the data *sources* replaced: a stub
+  `interpolate_var` reads a table the harness fills, and a stub `RDBCON` returns
+  a preloaded boundary field. 8 `hadv_*` goldens cover per-layer sub-stepping,
+  the X-Y/Y-X alternation, all-inflow and all-outflow boundaries, and constancy
+  under a divergent wind.
+- **A1** — Vendored CMAQ's serial no-op stencil-exchange layer
+  (`reference/stenex/`) and the `INCLUDE SUBST_*` header files
+  (`reference/include/`), so halo-exchange calls resolve to real upstream code
+  rather than hand-written stubs.
 
 ### Changed
 

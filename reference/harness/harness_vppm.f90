@@ -26,7 +26,7 @@
 !>           vel(ni+1)                          float32, adjusted in place
 program harness_vppm
 
-   use CGRID_SPCS, only: set_n_spc_adv
+   use CGRID_SPCS, only: set_species
 
    implicit none
 
@@ -74,8 +74,10 @@ program harness_vppm
    close (unit_in)
 
    ! Must happen before the first VPPM call: VPPM derives N_SPC_ADV from these
-   ! counts once and SAVEs the result. Slot nspcs is the rho*J slot.
-   call set_n_spc_adv(nspcs)
+   ! counts once and SAVEs the result. set_species takes the number of
+   ! transported species; VPPM adds one for rho*J, so pass nspcs - 1 to get
+   ! N_SPC_ADV = nspcs, with slot nspcs holding rho*J.
+   call set_species(nspcs - 1)
 
    call VPPM(ni, dt, ds, flx, vel, con)
 
