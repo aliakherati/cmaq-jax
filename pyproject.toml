@@ -1,0 +1,133 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "cmaq-jax"
+version = "0.1.0"
+description = "Differentiable JAX port of the CMAQ advection core (PPM horizontal + vertical transport)"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.11"
+authors = [
+    { name = "Ali Akherati", email = "aakherati91@gmail.com" },
+]
+keywords = [
+    "atmospheric-chemistry",
+    "air-quality",
+    "cmaq",
+    "advection",
+    "piecewise-parabolic-method",
+    "jax",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Atmospheric Science",
+    "Typing :: Typed",
+]
+dependencies = [
+    "numpy>=1.26",
+    "jax>=0.4.30",
+    "jaxlib>=0.4.30",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+    "pytest-cov>=5",
+    "ruff>=0.5",
+    "mypy>=1.10",
+    # Needed by scripts/make_<chunk>_figures.py — dev-time only, not used at runtime.
+    "matplotlib>=3.8",
+    # Needed by tests/regression/* — provides the float32 downcast and
+    # tolerance-aware compare primitives. Installed from GitHub since
+    # atmos-jax-common is not on PyPI yet.
+    "atmos-jax-common @ git+https://github.com/aliakherati/atmos-jax-common.git@main",
+]
+# Reading real MCIP/IOAPI meteorology. Not needed for A0-A2, which run on
+# synthetic fields; see docs/plans/subplans/A3-integrate.md.
+io = [
+    "xarray>=2024.1",
+    "netCDF4>=1.6",
+]
+
+[project.urls]
+Homepage = "https://github.com/aliakherati/cmaq-jax"
+Issues = "https://github.com/aliakherati/cmaq-jax/issues"
+"Related: atmos-jax-common" = "https://github.com/aliakherati/atmos-jax-common"
+"Related: som-jax" = "https://github.com/aliakherati/som-jax"
+"Upstream: CMAQ" = "https://github.com/USEPA/CMAQ"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/cmaq_jax"]
+
+[tool.hatch.metadata]
+# Required so we can list `atmos-jax-common @ git+...` as a dev dep.
+# atmos-jax-common is not on PyPI yet; remove this once it is.
+allow-direct-references = true
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src", "tests"]
+# Never lint the vendored CMAQ Fortran reference or its build products.
+extend-exclude = ["reference"]
+
+[tool.ruff.lint]
+select = [
+    "E", "F", "W",     # pyflakes / pycodestyle
+    "I",               # isort
+    "B",               # bugbear
+    "UP",              # pyupgrade
+    "RUF",             # ruff-specific
+    "SIM",             # simplify
+    "PL",              # pylint (subset)
+]
+ignore = [
+    "PLR0913",  # too many function arguments — scientific code legitimately has many
+    "PLR2004",  # magic numbers — unavoidable in numerical code with physical constants
+    "RUF002",   # "ambiguous" unicode in docstrings (×, ³, ⁻¹, …); we use it deliberately
+    "RUF003",   # same rule for comments
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["PLR2004", "S101"]
+# Figure-generation scripts are inherently long sequences of plt calls.
+"scripts/make_*_figures.py" = ["PLR0915"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+warn_unused_configs = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+disallow_untyped_defs = true
+check_untyped_defs = true
+no_implicit_optional = true
+show_error_codes = true
+pretty = true
+
+[[tool.mypy.overrides]]
+module = "tests.*"
+disallow_untyped_defs = false
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+addopts = [
+    "-ra",
+    "--strict-markers",
+    "--strict-config",
+]
+markers = [
+    "fortran: test requires a gfortran toolchain to build the reference harness",
+    "goldens: test requires committed Fortran goldens under data/goldens/",
+    "slow: test takes more than a few seconds",
+]
