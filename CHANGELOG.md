@@ -51,6 +51,10 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   positivity under a divergent wind, and constancy preservation over 80 steps.
 - **A0.9** — `scripts/make_a0_figures.py` and five figures under
   `docs/figures/a0/`.
+- **A0.9** — `scripts/make_a0_flow_figures.py`: solid-body rotation (Zalesak)
+  and deformational swirl (LeVeque) as static panels, a 3-D surface view, and
+  two animated GIFs. Measured on the rotation: phase error 0.003 cells, slot
+  23% filled, cone peak −8%, mass conserved to 7e-13, undershoot 1e-32.
 
 ### Changed
 

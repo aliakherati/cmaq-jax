@@ -86,6 +86,20 @@ regenerable via `scripts/make_<chunk>_figures.py`.
 | [`transport.png`](docs/figures/a0/transport.png) | A Gaussian and a square wave after one full revolution (400 steps). The Gaussian loses 0.9% of its peak to numerical diffusion; the square wave keeps full amplitude with no undershoot below zero or overshoot above one. |
 | [`vertical_stretching.png`](docs/figures/a0/vertical_stretching.png) | The non-uniform reconstruction on 35 CMAQ-like sigma layers, 6× thicker aloft than at the surface, with the resulting edge values, slope and curvature. |
 
+**A0 — what the scheme does to a field**
+
+The two benchmarks anyone working with transport schemes will recognise, run
+with the A0 kernel applied alternately along each axis. Regenerate with
+`python scripts/make_a0_flow_figures.py`.
+
+| File | What it shows |
+|---|---|
+| [`rotation.gif`](docs/figures/a0/rotation.gif) | Solid-body rotation of Zalesak's cone and slotted cylinder, animated through a full turn with a live min/max readout. The slot narrows but never closes and no ringing appears. |
+| [`deformation.gif`](docs/figures/a0/deformation.gif) | LeVeque's swirl winding the blob into a filament and unwinding it after the flow reverses at the half-period. |
+| [`rotation_2d.png`](docs/figures/a0/rotation_2d.png) | The same rotation at each quarter turn plus an error map. Phase error is 0.003 cells — the shapes return where they started, so the error is edge diffusion, not displacement. The slot fills 23%, the cone loses 8% of its peak, the cylinder plateau holds at 1.000, and mass is conserved to 7e-13. |
+| [`rotation_3d.png`](docs/figures/a0/rotation_3d.png) | The rotation as a surface, before and after. The cylinder keeps vertical sides and a flat top; an unlimited high-order scheme would ring around every edge. |
+| [`deformation_2d.png`](docs/figures/a0/deformation_2d.png) | The swirl at four stages, the error after return, and a trace of peak amplitude and Σc² against time. Both fall and never recover — that is irreversible mixing — while mass holds to machine precision. |
+
 ## The Fortran reference
 
 [`reference/fortran/`](reference/fortran) holds the CMAQ sources verbatim from

@@ -93,6 +93,7 @@ select = [
 ignore = [
     "PLR0913",  # too many function arguments — scientific code legitimately has many
     "PLR2004",  # magic numbers — unavoidable in numerical code with physical constants
+    "RUF001",   # same rule for strings -- figure captions use ×, →, ¼ on purpose
     "RUF002",   # "ambiguous" unicode in docstrings (×, ³, ⁻¹, …); we use it deliberately
     "RUF003",   # same rule for comments
 ]
