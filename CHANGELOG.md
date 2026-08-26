@@ -74,6 +74,17 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   (`reference/stenex/`) and the `INCLUDE SUBST_*` header files
   (`reference/include/`), so halo-exchange calls resolve to real upstream code
   rather than hand-written stubs.
+- **A1.3** — `cmaq_jax.velocity`: face velocity for a sweep. The C-staggered
+  path returns the wind unchanged (`hcontvel.F` RETURNs early when `CSTAGUV` is
+  true, the default since MCIP v3.5); the pre-2009 density-weighted fallback is
+  available by passing `rhoj`.
+- **A1.4** — `cmaq_jax.hadv.sweep`: one axis-generic PPM sweep of the whole
+  grid, replacing the two near-duplicate 660-line files `x_ppm.F`/`y_ppm.F`.
+- **A1.5** — `cmaq_jax.hadv.hadv`: the driver. Per-layer sub-stepping and the
+  X-Y/Y-X alternation, with layers statically grouped by
+  `(sub-step count, starting order)` so each group is a plain loop of sweeps —
+  no masking, no `lax.while_loop`. Matches all 8 driver goldens to under one
+  float32 ULP (worst case 1.05e-7).
 
 ### Changed
 
