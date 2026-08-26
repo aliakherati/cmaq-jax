@@ -16,3 +16,14 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   `reference/PROVENANCE.md` and a `scripts/vendor_reference.sh` to re-vendor.
 - **A0.1** — Plan hierarchy: `docs/ULTRAPLAN.md` (the CMAQ→JAX arc),
   `docs/plans/PLAN-advection.md`, and phase subplans `A0`–`A3`.
+- **A0.2** — `cmaq_jax.config`: `PPMConstants` and `GridConfig`, every field
+  citing the Fortran file and line it came from. Includes
+  `sigma_layer_thickness()` porting `DS(L) = ABS(X3FACE_GD(L) - X3FACE_GD(L-1))`.
+  Constants used only by `advstep` are deliberately deferred to A3.1 rather than
+  guessed.
+
+### Changed
+
+- mypy `python_version` set to 3.12: numpy >= 2.5 ships PEP 695 `type`
+  statements in its stubs that mypy cannot parse under 3.11. Runtime support for
+  3.11 is unaffected and stays covered by the pytest matrix.

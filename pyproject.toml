@@ -103,7 +103,10 @@ ignore = [
 "scripts/make_*_figures.py" = ["PLR0915"]
 
 [tool.mypy]
-python_version = "3.11"
+# 3.12 even though the package supports 3.11: numpy >= 2.5 ships stubs that use
+# PEP 695 `type` statements, which mypy cannot parse under python_version 3.11.
+# Runtime support for 3.11 is unaffected and is covered by the pytest matrix.
+python_version = "3.12"
 strict = true
 warn_unused_configs = true
 warn_redundant_casts = true
