@@ -45,6 +45,12 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - **A0.6** — `reference/harness/harness_ppm_coeffs.f90` calls `vppm.F`'s inner
   `PPM` subroutine directly, pinning the parabola independently of the velocity
   adjustment. Adds 14 `coeffs_*` goldens (7 profiles x uniform/stretched grids).
+- **A0.8** — `tests/properties/`: the guarantees the golden comparison cannot
+  check — ~2nd-order convergence against an analytic Gaussian, exact mass
+  conservation for a compact feature, no new extrema across a discontinuity,
+  positivity under a divergent wind, and constancy preservation over 80 steps.
+- **A0.9** — `scripts/make_a0_figures.py` and five figures under
+  `docs/figures/a0/`.
 
 ### Changed
 

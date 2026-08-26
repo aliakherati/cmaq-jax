@@ -65,6 +65,21 @@ Requires Python ≥ 3.11. Regenerating Fortran goldens additionally needs
 Tracked in [`docs/plans/PLAN-advection.md`](docs/plans/PLAN-advection.md) as
 chunks `A0.1` … `A3.7`.
 
+### Figures
+
+Each scientific chunk ships figures under `docs/figures/<chunk-id>/`,
+regenerable via `scripts/make_<chunk>_figures.py`.
+
+**A0 — the PPM kernels**
+
+| File | What it shows |
+|---|---|
+| [`fortran_agreement.png`](docs/figures/a0/fortran_agreement.png) | Per-case disagreement between the JAX port and `hppm.F`, against the float32 epsilon line. Worst case is ~1.7 float32 ULPs and three of ten cases are bit-identical, so the residual is precision, not algorithm. |
+| [`convergence.png`](docs/figures/a0/convergence.png) | Mean absolute error against grid refinement for a Gaussian advected a quarter domain, annotated with the measured order at each step and bracketed by 2nd- and 3rd-order reference slopes. Lands near 2: the limiter clips the peak, which is the correct behaviour. |
+| [`limiter_action.png`](docs/figures/a0/limiter_action.png) | The reconstructed parabola in every cell for a smooth profile, the same profile with a step, and with a spike. Circles mark cells the limiter collapsed to a constant — 4/40 for smooth, 6/40 when a discontinuity is added, showing it fires locally rather than everywhere. |
+| [`transport.png`](docs/figures/a0/transport.png) | A Gaussian and a square wave after one full revolution (400 steps). The Gaussian loses 0.9% of its peak to numerical diffusion; the square wave keeps full amplitude with no undershoot below zero or overshoot above one. |
+| [`vertical_stretching.png`](docs/figures/a0/vertical_stretching.png) | The non-uniform reconstruction on 35 CMAQ-like sigma layers, 6× thicker aloft than at the surface, with the resulting edge values, slope and curvature. |
+
 ## The Fortran reference
 
 [`reference/fortran/`](reference/fortran) holds the CMAQ sources verbatim from
