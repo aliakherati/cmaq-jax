@@ -1105,7 +1105,17 @@ def zadv_golden(case: ZadvCase, workdir: Path) -> dict[str, NDArray[np.generic]]
 #: answers by far more than a few ULPs. 20 leaves room for reassociation while
 #: staying orders of magnitude below anything meaningful; the observed maximum
 #: is printed on every run so creep is visible rather than silently absorbed.
-DRIFT_TOLERANCE_ULP = 20.0
+#:
+#: The binding case is ``coeffs_monotone_stretched`` at 24 ULPs between
+#: macOS/arm64 and ubuntu/x86-64, and it is binding for a reason already known
+#: from A0.6: on a linear profile ``c6 = 6*(cn - (cl+cr)/2)`` is a difference of
+#: nearly-equal numbers, so its true value is ~0 while its rounding error is set
+#: by ``|cn|``. The same cancellation is why that family's regression test
+#: budgets 16 ULPs on one machine. Cross-platform reassociation roughly doubles
+#: it, so 64 clears the measured worst case with room to spare while remaining
+#: four orders of magnitude below a real change: editing the vendored Fortran or
+#: altering the scheme moves answers by percent, which is ~1e5 ULPs.
+DRIFT_TOLERANCE_ULP = 64.0
 
 EPS32 = float(np.finfo(np.float32).eps)
 
