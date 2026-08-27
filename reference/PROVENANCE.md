@@ -2,8 +2,12 @@
 
 These files are copied verbatim from CMAQ. They are **never edited** — they are
 the reference the JAX port is validated against. `hppm.F` and `vppm.F` are
-compiled by `scripts/generate_goldens.py`; the rest are here so the port can be
-read against its source without a second checkout.
+compiled by `scripts/generate_goldens.py`, as are `deform.F`, `hcdiff3d.F`
+and `hdiff.F` for the horizontal-diffusion port; the rest are here so the port
+can be read against its source without a second checkout.
+
+The `hdiff/multiscale/*` files were vendored at the same commit as the advection
+files, and are identical on `main` and `5.5+`.
 
 | | |
 |---|---|
@@ -30,6 +34,10 @@ Source path prefix: `CCTM/src/`
 | `zadvyppm.F` | `vadv/local_cons/zadvyppm.F` | `e62f8ab4a2e00822` |
 | `advstep.F` | `driver/advstep.F` | `e0bf8ca9479a0b49` |
 | `xy_budget.F` | `hadv/ppm/xy_budget.F` | `9f07de250262e4d2` |
+| `hdiff.F` | `hdiff/multiscale/hdiff.F` | `b4650bd43d725216` |
+| `hcdiff3d.F` | `hdiff/multiscale/hcdiff3d.F` | `e30ba3c021cdf72d` |
+| `deform.F` | `hdiff/multiscale/deform.F` | `e1f69a1220e5ad90` |
+| `rho_j.F` | `hdiff/multiscale/rho_j.F` | `c48c2b0f3d561ef0` |
 
 ## Also vendored
 

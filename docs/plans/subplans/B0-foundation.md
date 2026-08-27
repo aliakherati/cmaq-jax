@@ -11,7 +11,7 @@ goldens; `generate_goldens.py --check` is clean.
 |---|---|---|---|
 | **B0.1** | Vendor `hdiff.F`, `hcdiff3d.F`, `deform.F`, `rho_j.F` + `PROVENANCE.md` rows | sha256 recorded; files byte-identical to `origin/5.5+` | `git diff --stat` empty vs upstream |
 | **B0.2** | `config.py`: `HDiffConstants` — `KH`, `KHMIN`, `DXB`, `ALP`, `CFC` | Every constant carries its `hcdiff3d.F` line | `pytest tests/unit/test_config.py` |
-| **B0.3** | Harness `harness_deform.f90`, `harness_hcdiff3d.f90` | Zeroes `DEFORM3D` before the call (see the plan's note) | `make -C reference` |
+| **B0.3** | Harness `harness_deform.f90`, `harness_hcdiff3d.f90` | `deform.F`/`hcdiff3d.F` compile unmodified; one call per process | `make -C reference` |
 | **B0.4** | Goldens for deformation, diffusivity and face coefficients | One process per `(NCOLS, NROWS, NLAYS)`; `--check` clean | `python scripts/generate_goldens.py --check` |
 
 ## Notes

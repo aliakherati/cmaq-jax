@@ -19,8 +19,10 @@ import numpy as np
 from numpy.typing import NDArray
 
 __all__ = [
+    "DEFAULT_HDIFF",
     "DEFAULT_PPM",
     "GridConfig",
+    "HDiffConstants",
     "PPMConstants",
     "sigma_layer_thickness",
 ]
@@ -110,6 +112,77 @@ class PPMConstants:
 
 DEFAULT_PPM = PPMConstants()
 """CMAQ v5.5 defaults. Kernels take a ``PPMConstants``; this is the usual one."""
+
+
+@dataclass(frozen=True)
+class HDiffConstants:
+    """Constants of the deformation-dependent horizontal eddy diffusivity.
+
+    All from ``hcdiff3d.F:104-115``. Note that ``kh`` and ``khmin`` are tuning
+    values chosen for a particular resolution, not physical constants -- the
+    file carries two commented-out alternatives for ``kh`` (``3.3e4`` from Brost
+    et al. 1988, and ``50.0`` for a 12 km run) and the active one is labelled
+    for a 4 km SARMAP simulation. ``dxb`` is the grid spacing they were tuned
+    at, and :meth:`base_diffusivity` rescales away from it.
+    """
+
+    kh: float = 2000.0
+    """Base horizontal eddy diffusivity, m^2/s, at spacing :attr:`dxb`.
+    ``hcdiff3d.F:107``."""
+
+    khmin: float = 200.0
+    """Floor on the deformation-induced diffusivity, m^2/s. ``hcdiff3d.F:109``."""
+
+    dxb: float = 4000.0
+    """Grid spacing :attr:`kh` was tuned at, m. ``hcdiff3d.F:110``."""
+
+    alp: float = 0.28
+    """Deformation coefficient; enters squared. ``hcdiff3d.F:111``."""
+
+    cfc: float = 0.300
+    """Stability factor for the diffusion sub-step. ``hcdiff3d.F:115``.
+
+    Commented in the source as "99%(1/sqrt(2))", which is 0.700 -- the value on
+    the line above, disabled. The active 0.300 is well inside that, so the
+    sub-step is conservative rather than marginal.
+    """
+
+    max_substeps: int = 64
+    """Cap on diffusion sub-steps per sync step.
+
+    CMAQ computes ``NSTEPS = int(DTSEC/DT) + 1`` and loops (``hdiff.F:337``),
+    with no cap. A traced loop needs a fixed trip count, so this bounds it; the
+    step reports how many were actually needed, and exceeding the cap is
+    reported rather than silently truncated -- the same arrangement as
+    ``PPMConstants.max_substeps``.
+    """
+
+    def __post_init__(self) -> None:
+        if self.kh <= 0.0 or self.khmin <= 0.0:
+            raise ValueError(f"kh and khmin must be positive, got {self.kh}, {self.khmin}")
+        if self.dxb <= 0.0:
+            raise ValueError(f"dxb must be positive, got {self.dxb}")
+        if self.cfc <= 0.0:
+            raise ValueError(f"cfc must be positive, got {self.cfc}")
+        if self.max_substeps < 1:
+            raise ValueError(f"max_substeps must be >= 1, got {self.max_substeps}")
+
+    def base_diffusivity(self, dx1: float, dx2: float) -> float:
+        """``KHA`` -- :attr:`kh` rescaled to this grid. ``hcdiff3d.F:188``.
+
+        ``(dxb^2)/(dx1*dx2) * kh``: coarser cells get *less* diffusivity, because
+        a coarse grid already represents less of the sub-grid mixing that this
+        term stands in for.
+        """
+        return (self.dxb * self.dxb) / (dx1 * dx2) * self.kh
+
+    def deformation_coefficient(self, dx1: float, dx2: float) -> float:
+        """``ACOEF = alp^2 * dx1 * dx2``. ``hcdiff3d.F:190``."""
+        return self.alp * self.alp * (dx1 * dx2)
+
+
+DEFAULT_HDIFF = HDiffConstants()
+"""CMAQ v5.5 defaults for horizontal diffusion."""
 
 
 def sigma_layer_thickness(x3face: NDArray[np.float64]) -> NDArray[np.float64]:

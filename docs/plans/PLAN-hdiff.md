@@ -85,21 +85,20 @@ thing most likely to be got wrong by analogy.
 
 ## Two things found while reading, before writing any code
 
-**`DEFORM3D`'s extra row and column are uninitialised in CMAQ.** `hcdiff3d.F`
-declares it `(NCOLS+1, NROWS+1, NLAYS)` as a local automatic array and passes it
-to `DEFORM` as `INTENT(OUT)` assumed-shape; `deform.F` fills only
-`(1:NCOLS, 1:NROWS)` per layer and never zeroes the rest. `hcdiff3d.F` then
-reads the **full** extent into `EDDYH3D` (its own `EDDYH3D = 0.0` is overwritten
-across `1..NCOLS+1, 1..NROWS+1`), so the last row and column of `K11BAR`/`K22BAR`
-are built from whatever was on the stack.
+**The deformation's extra row and column are defined as zero, deliberately.**
+`hcdiff3d.F` declares `DEFORM3D` as `(NCOLS+1, NROWS+1, NLAYS)` while
+`deform.F` computes values only on `(1:NCOLS, 1:NROWS)` — but `deform.F:337-343`
+zeroes the full extent first, commented "deformation at all boundary cells are
+defined to be zero". So the last row and column of `K11BAR`/`K22BAR` are built
+from zeros, and that is documented intent rather than an accident.
 
-Those coefficients multiply a gradient that is zero on the first sub-step —
-the halo is seeded with the edge cell's own mixing ratio — so the usual run is
-unaffected. It is not identically zero on *later* sub-steps (see below), so the
-values can leak in. The port defines them as **zero**, which is what the
-explicit `K11BAR(:,NROWS+1) = 0` / `K22BAR(NCOLS+1,:) = 0` boundary zeroing
-implies was intended. B0.3 must zero the array in the harness or goldens will
-not reproduce between runs.
+This is worth stating because the arithmetic makes it easy to assume otherwise:
+`EDDYH3D` is *not* zero there — it is `MSFD2 * KHA*KHMIN/(KHA+KHMIN)`, since
+`KHD = max(KHMIN, ACOEF*0) = KHMIN` — so the boundary coefficient is a nonzero
+floor value, not zero. `hcdiff3d.F:216,226` then explicitly zeroes
+`K11BAR(:,NROWS+1)` and `K22BAR(NCOLS+1,:)`, which is a *different* edge from
+the one the deformation zeroing covers. The port has to reproduce both, and they
+are easy to conflate.
 
 **The halo is frozen across sub-steps.** `HALO_SOUTH`/`NORTH`/`WEST`/`EAST` are
 filled once, before the `DO 344` sub-step loop (`hdiff.F:355-400`), from the
