@@ -36,7 +36,7 @@ so each port is validatable on its own.
 |---|---|---|---|---|
 | 1 | **Advection** (HADV + ZADV) | `cmaq-jax` | Two self-contained PPM kernels; ~350 lines of real numerics; no chemistry coupling; analytic test cases exist | **done** (`A0`–`A3`) |
 | 2 | Horizontal diffusion | `cmaq-jax` | Small, shares the halo machinery advection builds | **done** (`B0`–`B2`) |
-| 3 | Vertical diffusion (ACM2) | `cmaq-jax` | Implicit solve; introduces a tridiagonal solver; couples to deposition | **next** |
+| 3 | Vertical diffusion (ACM2) | `cmaq-jax` | Implicit solve; introduces a tridiagonal solver; couples to deposition | **in progress** (`C0`–`C3`) |
 | 4 | Gas chemistry | `saprc-jax` (planned) | Stiff ODE; `som-jax` already proves the diffrax approach | not started |
 | 5 | Aerosol | `tomas-jax` (planned) | Largest and most coupled; last | not started |
 
@@ -81,8 +81,10 @@ than the no-flux condition it is described as; and its diffusion sub-step
 (`CFC = 0.300`) sits past the explicit-scheme stability limit of 0.25 whenever
 sub-stepping engages. Neither affects CMAQ's benchmark configurations.
 
-## Next
+## Current project
 
-Vertical diffusion (ACM2). It is the first operator needing an implicit solve,
-so it brings a tridiagonal solver, and it couples to deposition — a wider
-interface than anything in `A` or `B`.
+[`plans/PLAN-vdiff.md`](plans/PLAN-vdiff.md) — chunks `C0.1` … `C3.4`.
+
+Scoped to **transport, not deposition**: deposition velocities and emission
+fluxes are inputs, the way meteorology is an input to advection. The modules
+that compute them (`depv/m3dry`, `depv/stage`) are a separate port.
