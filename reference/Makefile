@@ -70,7 +70,8 @@ COMMON_OBJ := $(BUILD)/stubs.o $(BUILD)/stubs_driver.o $(STENEX_OBJ)
 HARNESSES := $(BUILD)/harness_hppm $(BUILD)/harness_vppm $(BUILD)/harness_ppm_coeffs \
              $(BUILD)/harness_zfdbc $(BUILD)/harness_hadv $(BUILD)/harness_zadv \
              $(BUILD)/harness_hcdiff3d $(BUILD)/harness_hdiff \
-             $(BUILD)/harness_tri $(BUILD)/harness_matrix1 $(BUILD)/harness_eddyx
+             $(BUILD)/harness_tri $(BUILD)/harness_matrix1 $(BUILD)/harness_eddyx \
+             $(BUILD)/harness_vdiff
 
 .PHONY: all clean
 all: $(HARNESSES)
@@ -178,6 +179,22 @@ $(BUILD)/harness_eddyx: $(COMMON_OBJ) $(BUILD)/stubs_asx.o $(BUILD)/eddyx.o \
 	$(FC) $(FFLAGS) $^ -o $@
 
 $(BUILD)/harness_eddyx.o: $(BUILD)/stubs_asx.o
+
+# The ACM2 driver. Its extra module surface -- species maps, deposition-velocity
+# carrier, emission array -- is plain data; the modules that *compute* those are
+# outside this port's scope.
+$(BUILD)/stubs_vdiff.o: $(HARNESS)/stubs_vdiff.f90 $(COMMON_OBJ)
+	$(FC) $(FFLAGS) -c $< -o $@
+
+$(BUILD)/vdiffacmx.o: $(BUILD)/stubs_asx.o $(BUILD)/stubs_vdiff.o \
+                      $(BUILD)/tri.o $(BUILD)/matrix1.o
+
+$(BUILD)/harness_vdiff.o: $(BUILD)/stubs_asx.o $(BUILD)/stubs_vdiff.o
+
+$(BUILD)/harness_vdiff: $(COMMON_OBJ) $(BUILD)/stubs_asx.o $(BUILD)/stubs_vdiff.o \
+                        $(BUILD)/tri.o $(BUILD)/matrix1.o $(BUILD)/vdiffacmx.o \
+                        $(BUILD)/harness_vdiff.o
+	$(FC) $(FFLAGS) $^ -o $@
 
 clean:
 	rm -rf $(BUILD)

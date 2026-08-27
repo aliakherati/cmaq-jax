@@ -41,6 +41,12 @@ module ASX_DATA_MOD
       ! Dot-dimensioned winds, (NCOLS+1, NROWS+1, NLAYS) upstream.
       real, allocatable :: UWIND(:, :, :)
       real, allocatable :: VWIND(:, :, :)
+      ! Additional fields vdiffacmx.F reads.
+      real, allocatable :: DENS1(:, :)      ! layer-1 air density [kg/m3]
+      real, allocatable :: RDEPVHT(:, :)    ! 1 / deposition height [1/m]
+      real, allocatable :: HOL(:, :)        ! PBL height / Monin-Obukhov length
+      integer, allocatable :: LPBL(:, :)    ! layer index of the PBL top
+      logical, allocatable :: CONVCT(:, :)  ! is this column convective?
    end type MET_Type
 
    type(MET_Type) :: Met_Data
@@ -61,6 +67,16 @@ contains
       allocate (Met_Data%QC(ncols, nrows, nlays))
       allocate (Met_Data%UWIND(ncols + 1, nrows + 1, nlays))
       allocate (Met_Data%VWIND(ncols + 1, nrows + 1, nlays))
+      allocate (Met_Data%DENS1(ncols, nrows))
+      allocate (Met_Data%RDEPVHT(ncols, nrows))
+      allocate (Met_Data%HOL(ncols, nrows))
+      allocate (Met_Data%LPBL(ncols, nrows))
+      allocate (Met_Data%CONVCT(ncols, nrows))
+      Met_Data%DENS1 = 1.2
+      Met_Data%RDEPVHT = 0.05
+      Met_Data%HOL = -1.0
+      Met_Data%LPBL = 1
+      Met_Data%CONVCT = .false.
    end subroutine met_alloc
 
 end module ASX_DATA_MOD

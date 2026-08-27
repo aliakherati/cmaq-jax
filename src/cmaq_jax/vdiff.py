@@ -45,10 +45,19 @@ RDGAS = 287.07548994
 RWVAP = 461.52492604
 
 __all__ = [
+    "ACM2Column",
+    "ColumnGeometry",
+    "ColumnState",
+    "SurfaceExchange",
     "VerticalMeteorology",
+    "acm2_column_step",
+    "acm2_setup",
+    "column_geometry",
     "eddy_diffusivity",
     "solve_acm1",
     "solve_tridiagonal",
+    "substep_counts",
+    "vdiff_step",
 ]
 
 
@@ -300,3 +309,463 @@ def eddy_diffusivity(
 
     # The top layer has no interface above it.
     return jnp.concatenate([eddv, jnp.zeros_like(eddv[..., :1])], axis=-1)
+
+
+class ColumnGeometry(NamedTuple):
+    """Layer thicknesses and interface spacings for one column.
+
+    ``dzh[0] = zf[0]`` — the first layer is measured from the ground, not from
+    a face below it (``vdiffacmx.F:445``).
+    """
+
+    dzh: Array  # layer thickness, m
+    dzhi: Array  # 1/dzh
+    dzfi: Array  # 1/(zh[L+1] - zh[L]); the top entry repeats the one below
+
+
+def column_geometry(zf: Array, zh: Array) -> ColumnGeometry:
+    """Ports ``vdiffacmx.F:445-454``."""
+    zf, zh = jnp.asarray(zf), jnp.asarray(zh)
+    dzh = jnp.concatenate([zf[:1], zf[1:] - zf[:-1]])
+    spacing = zh[1:] - zh[:-1]
+    # The top layer has no interface above it, so CMAQ repeats the one below.
+    dzfi = jnp.concatenate([1.0 / spacing, (1.0 / spacing)[-1:]])
+    return ColumnGeometry(dzh=dzh, dzhi=1.0 / dzh, dzfi=dzfi)
+
+
+class ACM2Column(NamedTuple):
+    """The per-column ACM2 setup: mixing rates, the split diffusivity, the step.
+
+    ``seddy`` is *not* the input diffusivity. Inside the convective boundary
+    layer the convective stage takes a fraction ``fnl`` of it and carries that
+    non-locally instead, leaving ``(1 - fnl)`` for the local stage
+    (``vdiffacmx.F:493-499``). That reallocation is what makes ACM2 asymmetric,
+    and it is the single easiest thing to miss when reading the routine.
+    """
+
+    seddy: Array  # (nlays,) diffusivity after the split
+    mbarks: Array  # (nlays,) upward non-local rate
+    mdwn: Array  # (nlays,) downward subsidence rate
+    lcbl: Array  # top of the convective boundary layer, 1-based count
+    nlp: Array  # sub-steps this column needs
+
+
+def acm2_setup(
+    seddy: Array,
+    geometry: ColumnGeometry,
+    *,
+    pbl: Array,
+    zf: Array,
+    lpbl: Array,
+    hol: Array,
+    convective: Array,
+    dtsec: float,
+    constants: ACM2Constants = DEFAULT_ACM2,
+) -> ACM2Column:
+    """The ACM2 mixing rates and sub-step count for one column.
+
+    Ports ``vdiffacmx.F:455-516``. ``hol`` is the PBL depth over the
+    Monin–Obukhov length, negative when convective; ``lpbl`` is the layer index
+    of the PBL top, 1-based as CMAQ counts.
+
+    The sub-step limit takes the smaller of a diffusion constraint,
+    ``0.75/(K·dzh⁻¹·dzf⁻¹)``, and — where convective — an ACM constraint
+    ``0.75/(mbar·rz)``. Both are *accuracy* limits: Crank–Nicolson is
+    unconditionally stable, so unlike horizontal diffusion there is no
+    stability boundary to sit the wrong side of.
+    """
+    nlays = seddy.shape[0]
+    layer = jnp.arange(nlays)
+
+    # Diffusion limit, over interfaces only (the top layer has none).
+    interior = layer < nlays - 1
+    limit = jnp.where(
+        interior,
+        constants.substep_factor / (seddy * geometry.dzhi * geometry.dzfi),
+        jnp.inf,
+    )
+    dtlim = jnp.minimum(dtsec, limit.min())
+
+    # Non-local mixing rate. FNL is the fraction of the total mixing the plume
+    # carries; the local stage keeps the rest.
+    meddy = seddy[0] * geometry.dzfi[0] / (pbl - zf[0])
+    fnl = 1.0 / (
+        1.0
+        + ((constants.karman / jnp.maximum(-hol, 1.0e-12)) ** 0.3333) / (0.72 * constants.karman)
+    )
+    mbar = meddy * fnl
+
+    lcbl = jnp.where(convective, lpbl, 1)
+    in_cbl = layer < lcbl
+
+    mbarks = jnp.where(in_cbl, mbar, 0.0)
+    mdwn = jnp.where(
+        in_cbl & (layer >= 1),
+        mbar * (pbl - jnp.concatenate([zf[:1], zf[:-1]])) * geometry.dzhi,
+        0.0,
+    )
+    # The top CBL layer mixes up at the rate it subsides -- the closure that
+    # keeps the column conservative (vdiffacmx.F:501).
+    top = lcbl - 1
+    mbarks = mbarks.at[top].set(jnp.where(convective, mdwn[top], mbarks[top]))
+
+    split_seddy = jnp.where(in_cbl, (1.0 - fnl) * seddy, seddy)
+
+    rz = (zf[top] - zf[0]) * geometry.dzhi[0]
+    dtacm = 1.0 / (mbar * rz)
+    dtlim = jnp.where(convective, jnp.minimum(constants.substep_factor * dtacm, dtlim), dtlim)
+
+    seddy_out = jnp.where(convective, split_seddy, seddy)
+    mbarks = jnp.where(convective, mbarks, 0.0)
+    mdwn = jnp.where(convective, mdwn, 0.0)
+
+    # NLP = int(DTSEC/DTLIM + 0.99): a ceiling, so the actual step is at or
+    # below the limit rather than straddling it.
+    nlp = jnp.floor(dtsec / dtlim + 0.99).astype(jnp.int32)
+    return ACM2Column(seddy=seddy_out, mbarks=mbarks, mdwn=mdwn, lcbl=lcbl, nlp=jnp.maximum(nlp, 1))
+
+
+class SurfaceExchange(NamedTuple):
+    """Deposition and emission at the surface, per species.
+
+    Inputs to this operator, not outputs of it — the modules that compute them
+    (``depv/m3dry``, the DESID emission machinery) are a separate concern, in
+    the same way meteorology is an input to advection.
+
+    ``depv`` must be **strictly positive**. The surface layer relaxes toward the
+    equilibrium ``pldv/depv`` (``vdiffacmx.F:625``), so a zero deposition
+    velocity is 0/0 and turns the column into NaN. A run with negligible
+    deposition uses a small value, not zero.
+    """
+
+    depv: Array  # (nspc,) deposition velocity, m/s
+    pldv: Array  # (nspc,) surface emission flux
+    emis: Array  # (nspc, nlays) layered emission, already scaled by the sub-step
+
+
+def _shift_up(a: Array) -> Array:
+    """``a`` shifted toward the surface, repeating the top entry."""
+    return jnp.concatenate([a[1:], a[-1:]])
+
+
+def _shift_down(a: Array) -> Array:
+    """``a`` shifted away from the surface, repeating the bottom entry."""
+    return jnp.concatenate([a[:1], a[:-1]])
+
+
+class _Coefficients(NamedTuple):
+    """Matrix entries for both stages. Assembled once per sync step, since none
+    of them depends on the concentration."""
+
+    aa: Array
+    bb1: Array
+    ee1: Array
+    mfac: Array
+    lfac1: Array
+    lfac2: Array
+    cc: Array
+    bb2: Array
+    ee2: Array
+    lfac3: Array
+    lfac4: Array
+
+
+def _acm2_matrices(
+    setup: ACM2Column,
+    geometry: ColumnGeometry,
+    *,
+    dfacp: Array,
+    dfacq: Array,
+    dfsp: Array,
+    dfsq: Array,
+    eddy: Array,
+    pbl: Array,
+    zf: Array,
+) -> _Coefficients:
+    """Both stages' matrices. Ports ``vdiffacmx.F:656-679``.
+
+    The ``lfac*`` terms belong to the explicit half of the Crank-Nicolson step
+    and so appear on the right-hand side; the rest form the two matrices.
+    """
+    nlays = geometry.dzh.shape[0]
+    layer = jnp.arange(nlays)
+    in_cbl = layer < setup.lcbl
+    delp = pbl - zf[0]
+
+    # --- convective stage (vdiffacmx.F:656-667) --------------------------
+    in_cbl = layer < setup.lcbl
+    delp = pbl - zf[0]
+
+    aa = jnp.where(in_cbl & (layer >= 1), -dfacp * setup.mbarks, 0.0)
+    bb1 = jnp.where(
+        layer == 0,
+        1.0 + delp * dfsp[0] * setup.mbarks[0],
+        jnp.where(in_cbl, 1.0 + dfacp * setup.mdwn, 1.0),
+    )
+    ee1 = jnp.where(
+        in_cbl & (layer >= 1),
+        -_shift_down(dfsp) * geometry.dzh * setup.mdwn,
+        0.0,
+    )
+    mfac = jnp.where(
+        in_cbl & (layer >= 1),
+        _shift_up(geometry.dzh) * geometry.dzhi * _shift_up(setup.mdwn),
+        0.0,
+    )
+    lfac1 = dfsq[0] * delp * setup.mbarks[0]
+    lfac2 = dfsq[0] * _shift_up(setup.mdwn)[0] * geometry.dzh[1]
+
+    # --- local stage (vdiffacmx.F:669-679) -------------------------------
+    ee2 = -dfsp * eddy
+    lfac3 = dfsq * eddy
+    cc = jnp.where(layer >= 1, -dfsp * _shift_down(eddy), 0.0)
+    bb2 = jnp.where(layer == 0, 1.0 - ee2, 1.0 - cc - ee2)
+    lfac4 = jnp.where(layer >= 1, dfsq * _shift_down(eddy), 0.0)
+    # The top layer has no interface above it, so no upward flux term.
+    ee2 = jnp.where(layer < nlays - 1, ee2, 0.0)
+    lfac3 = jnp.where(layer < nlays - 1, lfac3, 0.0)
+
+    return _Coefficients(
+        aa=aa,
+        bb1=bb1,
+        ee1=ee1,
+        mfac=mfac,
+        lfac1=lfac1,
+        lfac2=lfac2,
+        cc=cc,
+        bb2=bb2,
+        ee2=ee2,
+        lfac3=lfac3,
+        lfac4=lfac4,
+    )
+
+
+def acm2_column_step(
+    conc: Array,
+    setup: ACM2Column,
+    geometry: ColumnGeometry,
+    surface: SurfaceExchange,
+    *,
+    pbl: Array,
+    zf: Array,
+    dens1: Array,
+    rdepvht: Array,
+    dtsec: float,
+    max_substeps: int,
+    constants: ACM2Constants = DEFAULT_ACM2,
+) -> tuple[Array, Array]:
+    """One sync step of ACM2 for a single column. Ports ``vdiffacmx.F:640-1130``.
+
+    ``conc`` is ``(nspc, nlays)``. Returns the diffused column and the
+    accumulated dry deposition, ``(nspc,)``.
+
+    Each sub-step is four moves:
+
+    1. the surface layer relaxes toward ``pldv/depv`` over the implicit half
+       step, and the deposited mass is accumulated;
+    2. **the convective stage**, where the column is convective — the non-local
+       plume, solved with :func:`solve_acm1`;
+    3. **the local stage**, always — Crank–Nicolson diffusion plus the layered
+       emission source, solved with :func:`solve_tridiagonal`;
+    4. the surface layer relaxes again over the explicit half step.
+
+    ``max_substeps`` is a static bound. Columns needing fewer stop early by
+    masking, so each column takes exactly its own ``nlp`` steps of its own
+    ``dtsec/nlp`` — the ragged loop CMAQ writes, made rectangular without
+    changing the arithmetic.
+    """
+    nspc, nlays = conc.shape
+    layer = jnp.arange(nlays)
+
+    dts = dtsec / setup.nlp
+    dfacp = constants.theta * dts
+    dfacq = constants.theta_bar * dts
+
+    dfsp = dfacp * geometry.dzhi
+    dfsq = dfacq * geometry.dzhi
+    eddy = setup.seddy * geometry.dzfi
+
+    # --- surface exchange coefficients (vdiffacmx.F:618-626) ---------------
+    rp = dfacp * rdepvht
+    rq = dfacq * rdepvht
+    efac1 = jnp.exp(-surface.depv * rp)
+    efac2 = jnp.exp(-surface.depv * rq)
+    pol = surface.pldv / surface.depv
+    dd_fac = dts * dens1 * surface.depv
+    evasion = dts * dens1 * surface.pldv
+
+    coeff = _acm2_matrices(
+        setup,
+        geometry,
+        dfacp=dfacp,
+        dfacq=dfacq,
+        dfsp=dfsp,
+        dfsq=dfsq,
+        eddy=eddy,
+        pbl=pbl,
+        zf=zf,
+    )
+    aa, bb1, ee1, mfac, lfac1, lfac2, cc, bb2, ee2, lfac3, lfac4 = coeff
+    in_cbl = layer < setup.lcbl
+
+    convective = setup.lcbl > 1
+
+    def substep(carry: tuple[Array, Array], step: Array) -> tuple[tuple[Array, Array], None]:
+        current, deposited = carry
+        active = step < setup.nlp
+
+        # 1. surface relaxation, implicit half.
+        surface_new = pol + (current[:, 0] - pol) * efac1
+        updated = current.at[:, 0].set(jnp.where(active, surface_new, current[:, 0]))
+        deposited = deposited + jnp.where(
+            active, constants.theta * (dd_fac * updated[:, 0] - evasion), 0.0
+        )
+
+        # 2. convective stage.
+        upper = jnp.concatenate([updated[:, 1:], updated[:, -1:]], axis=1)
+        rhs_conv = jnp.where(
+            layer == 0,
+            updated - lfac1 * updated + lfac2 * upper,
+            updated + dfacq * (setup.mbarks * updated[:, :1] - setup.mdwn * updated + mfac * upper),
+        )
+        solved = solve_acm1(aa, bb1, ee1, rhs_conv, setup.lcbl)
+        after_convective = jnp.where(in_cbl, solved, updated)
+        updated = jnp.where(convective & active, after_convective, updated)
+
+        # 3. local stage.
+        lower = jnp.concatenate([updated[:, :1], updated[:, :-1]], axis=1)
+        upper = jnp.concatenate([updated[:, 1:], updated[:, -1:]], axis=1)
+        rhs_local = (
+            updated + lfac3 * (upper - updated) - lfac4 * (updated - lower) + surface.emis * dts
+        )
+        diffused = solve_tridiagonal(cc, bb2, ee2, rhs_local)
+        updated = jnp.where(active, diffused, updated)
+
+        # 4. surface relaxation, explicit half.
+        surface_new = pol + (updated[:, 0] - pol) * efac2
+        updated = updated.at[:, 0].set(jnp.where(active, surface_new, updated[:, 0]))
+        # The evasion term appears in *both* halves for a plain species
+        # (vdiffacmx.F:696 and 1104-1106). Only the heterogeneous-HONO branches
+        # omit it from the second, and copying their form here costs exactly
+        # THBAR * DTS * DENS1 * PLDV -- invisible unless emissions are on.
+        deposited = deposited + jnp.where(
+            active, constants.theta_bar * (dd_fac * updated[:, 0] - evasion), 0.0
+        )
+
+        return (updated, deposited), None
+
+    (final, ddep), _ = jax.lax.scan(
+        substep, (conc, jnp.zeros((nspc,), dtype=conc.dtype)), jnp.arange(max_substeps)
+    )
+    return final, ddep
+
+
+class ColumnState(NamedTuple):
+    """Everything one column of :func:`vdiff_step` needs, per column.
+
+    Arrays are ``(ncols, nrows, ...)`` with the layer axis last, matching the
+    rest of the package. CMAQ passes ``SEDDY`` layer-first
+    (``vdiffproc.F:160``); the transpose belongs at the boundary, not in the
+    kernel.
+    """
+
+    seddy: Array  # (ncols, nrows, nlays)
+    zf: Array
+    zh: Array
+    pbl: Array  # (ncols, nrows)
+    lpbl: Array
+    hol: Array
+    dens1: Array
+    rdepvht: Array
+    convective: Array
+
+
+def vdiff_step(
+    conc: Array,
+    state: ColumnState,
+    surface: SurfaceExchange,
+    *,
+    dtsec: float,
+    max_substeps: int,
+    constants: ACM2Constants = DEFAULT_ACM2,
+) -> tuple[Array, Array]:
+    """ACM2 vertical diffusion over a domain. Ports ``vdiffacmx.F``.
+
+    ``conc`` is ``(ncols, nrows, nlays, nspc)``, matching the rest of the
+    package; each column is transposed internally to ``(nspc, nlays)`` because
+    that is the axis order both solvers recurse along. ``surface`` carries
+    ``(ncols, nrows, nspc)`` fields and ``(ncols, nrows, nlays, nspc)``
+    emissions. Returns the diffused concentrations and the accumulated dry
+    deposition, ``(ncols, nrows, nspc)``.
+
+    **Not part of the coupled transport block.** ``sciproc.F`` runs vertical
+    diffusion *first*, on uncoupled concentrations, before ``COUPLE``. It is
+    applied outside :func:`cmaq_jax.api.transport_step`, not appended to it.
+
+    ``max_substeps`` bounds the sub-step loop. Every column runs the same number
+    of scan iterations and masks those past its own ``nlp``, so the arithmetic
+    matches CMAQ's ragged loop exactly while the shape stays rectangular. Take
+    the bound from :func:`substep_counts`; a column needing more is silently
+    under-stepped, which is why that helper exists rather than leaving the
+    caller to guess.
+    """
+    conc = jnp.asarray(conc)
+
+    def one_column(column: Array, col: ColumnState, surf: SurfaceExchange) -> tuple[Array, Array]:
+        geometry = column_geometry(col.zf, col.zh)
+        setup = acm2_setup(
+            col.seddy,
+            geometry,
+            pbl=col.pbl,
+            zf=col.zf,
+            lpbl=col.lpbl,
+            hol=col.hol,
+            convective=col.convective,
+            dtsec=dtsec,
+            constants=constants,
+        )
+        return acm2_column_step(
+            column.T,
+            setup,
+            geometry,
+            SurfaceExchange(depv=surf.depv, pldv=surf.pldv, emis=surf.emis.T),
+            pbl=col.pbl,
+            zf=col.zf,
+            dens1=col.dens1,
+            rdepvht=col.rdepvht,
+            dtsec=dtsec,
+            max_substeps=max_substeps,
+            constants=constants,
+        )
+
+    over_domain = jax.vmap(jax.vmap(one_column, in_axes=(0, 0, 0)), in_axes=(0, 0, 0))
+    diffused, ddep = over_domain(conc, state, surface)
+    # Back to (ncols, nrows, nlays, nspc).
+    return jnp.swapaxes(diffused, -1, -2), ddep
+
+
+def substep_counts(
+    state: ColumnState, dtsec: float, *, constants: ACM2Constants = DEFAULT_ACM2
+) -> Array:
+    """``NLP`` for every column — the quantity :func:`vdiff_step` needs bounded.
+
+    Kept separate because the bound has to be a Python integer for the scan
+    length: take ``int(substep_counts(...).max())``. Hiding that reduction
+    inside a jitted step would force a host sync on every call.
+    """
+
+    def one(col: ColumnState) -> Array:
+        setup = acm2_setup(
+            col.seddy,
+            column_geometry(col.zf, col.zh),
+            pbl=col.pbl,
+            zf=col.zf,
+            lpbl=col.lpbl,
+            hol=col.hol,
+            convective=col.convective,
+            dtsec=dtsec,
+            constants=constants,
+        )
+        return setup.nlp
+
+    return jax.vmap(jax.vmap(one))(state)

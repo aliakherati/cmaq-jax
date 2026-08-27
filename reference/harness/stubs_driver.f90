@@ -40,6 +40,13 @@ module HGRD_DEFN_STUB
    real(8) :: XORIG_GD = 0.0d0
    real(8) :: YORIG_GD = 0.0d0
 
+   ! MPI subdomain origins. Serial: one rank whose subdomain starts at (1,1).
+   ! vdiffacmx.F:478 reads these only to print a global column/row in a
+   ! diagnostic warning.
+   integer :: COLSX_PE(2, 1) = 1
+   integer :: ROWSX_PE(2, 1) = 1
+   integer :: mype = 0
+
 contains
 
    !> Override the cell size. 12 km by default, matching the benchmark domain,

@@ -1992,6 +1992,221 @@ def eddyx_golden(case: EddyxCase, workdir: Path) -> dict[str, NDArray[np.generic
     }
 
 
+@dataclass(frozen=True)
+class VdiffCase:
+    """One call to VDIFFACMX, the ACM2 driver.
+
+    Deposition velocities and emission fluxes are inputs, which is this port's
+    scope boundary. ``depv`` must be strictly positive: the surface exchange
+    computes ``POL = PLDV/DEPV`` (``vdiffacmx.F:625``), so a zero deposition
+    velocity gives 0/0 and the whole column becomes NaN. A "no deposition" case
+    therefore uses a negligible value, not zero.
+    """
+
+    name: str
+    dtsec: float
+    convct: NDArray[np.int32]  # (ncols, nrows), 1 = convective
+    lpbl: NDArray[np.int32]  # (ncols, nrows), layer index of the PBL top
+    pbl: NDArray[np.float32]
+    hol: NDArray[np.float32]  # PBL height / Monin-Obukhov length; < 0 convective
+    dens1: NDArray[np.float32]
+    rdepvht: NDArray[np.float32]
+    zf: NDArray[np.float32]  # (ncols, nrows, nlays)
+    zh: NDArray[np.float32]
+    seddy: NDArray[np.float32]  # (nlays, ncols, nrows) -- layer-first, as CMAQ passes it
+    depv: NDArray[np.float32]  # (nspc, ncols, nrows)
+    pldv: NDArray[np.float32]
+    vdemis: NDArray[np.float32]  # (nspc, nlays, ncols, nrows)
+    cngrd: NDArray[np.float32]  # (nspc, nlays, ncols, nrows)
+    note: str = ""
+
+
+def vdiff_cases() -> list[VdiffCase]:
+    """Driver cases: one per code path the two-stage split can take."""
+    ncols, nrows, nlays, nspc = 3, 2, 14, 3
+    rng = np.random.default_rng(20260828)
+    face = np.linspace(40.0, 2600.0, nlays)
+
+    def build(
+        name: str,
+        *,
+        convective: bool,
+        lpbl: int = 5,
+        seddy: float = 10.0,
+        depv: float = 1.0e-9,
+        pldv: float = 0.0,
+        emis: float = 0.0,
+        dtsec: float = 300.0,
+        surface_pulse: bool = True,
+        note: str = "",
+    ) -> VdiffCase:
+        shape2 = (ncols, nrows)
+        shape3 = (ncols, nrows, nlays)
+
+        if surface_pulse:
+            conc = np.zeros((nspc, nlays, ncols, nrows))
+            conc[0, 0] = 100.0
+            conc[1] = 1.0 + rng.random((nlays, ncols, nrows))
+            conc[2, nlays // 2] = 40.0
+        else:
+            conc = 1.0 + rng.random((nspc, nlays, ncols, nrows))
+
+        return VdiffCase(
+            name=name,
+            dtsec=dtsec,
+            convct=np.full(shape2, 1 if convective else 0, dtype=np.int32),
+            lpbl=np.full(shape2, lpbl, dtype=np.int32),
+            pbl=np.full(shape2, float(face[lpbl - 1]), dtype=F32),
+            hol=np.full(shape2, -2.0 if convective else 5.0, dtype=F32),
+            dens1=np.full(shape2, 1.2, dtype=F32),
+            rdepvht=np.full(shape2, 0.02, dtype=F32),
+            zf=np.broadcast_to(face, shape3).astype(F32),
+            zh=(np.broadcast_to(face, shape3) - 20.0).astype(F32),
+            seddy=np.full((nlays, ncols, nrows), seddy, dtype=F32),
+            depv=np.full((nspc, ncols, nrows), depv, dtype=F32),
+            pldv=np.full((nspc, ncols, nrows), pldv, dtype=F32),
+            vdemis=np.concatenate(
+                [
+                    np.full((nspc, 1, ncols, nrows), emis),
+                    np.zeros((nspc, nlays - 1, ncols, nrows)),
+                ],
+                axis=1,
+            ).astype(F32),
+            cngrd=conc.astype(F32),
+            note=note,
+        )
+
+    return [
+        build(
+            "stable",
+            convective=False,
+            note="CONVCT false, so the convective stage is skipped entirely and "
+            "this is Crank-Nicolson diffusion with a surface flux. The sharper "
+            "first target: if this does not match, debugging the ACM2 terms is "
+            "premature.",
+        ),
+        build(
+            "convective",
+            convective=True,
+            lpbl=6,
+            note="the non-local stage active. SEDDY is scaled by (1 - FNL) "
+            "inside the CBL and the removed fraction is carried by the plume "
+            "instead -- the asymmetry ACM2 is named for.",
+        ),
+        build(
+            "deep_cbl",
+            convective=True,
+            lpbl=11,
+            note="a CBL filling most of the column, so the first-column matrix "
+            "is large and the ALPHA product runs long.",
+        ),
+        build(
+            "shallow_cbl",
+            convective=True,
+            lpbl=2,
+            note="the smallest convective stage that runs: LCBL = 2.",
+        ),
+        build(
+            "with_deposition",
+            convective=False,
+            depv=0.01,
+            note="a real deposition velocity, so the surface layer relaxes "
+            "toward PLDV/DEPV and the dry-deposition accumulator is exercised.",
+        ),
+        build(
+            "with_emissions",
+            convective=False,
+            depv=0.005,
+            pldv=0.02,
+            emis=0.5,
+            note="emissions in both forms: PLDV at the surface, which sets the "
+            "relaxation target, and VDEMIS as a layer source in the local "
+            "stage's right-hand side.",
+        ),
+        build(
+            "substepped",
+            convective=True,
+            lpbl=8,
+            seddy=150.0,
+            dtsec=1800.0,
+            note="strong mixing over a long step, so NLP is well above 1 and the "
+            "sub-step loop runs many times.",
+        ),
+        build(
+            "smooth_random",
+            convective=True,
+            lpbl=7,
+            depv=0.008,
+            pldv=0.01,
+            emis=0.2,
+            surface_pulse=False,
+            note="everything on at once with no structure to exploit.",
+        ),
+    ]
+
+
+def run_vdiff(case: VdiffCase, workdir: Path) -> dict[str, NDArray[np.generic]]:
+    nspc, nlays, ncols, nrows = case.cngrd.shape
+    payload = (
+        struct.pack("<4i", ncols, nrows, nlays, nspc)
+        + struct.pack("<f", case.dtsec)
+        + case.convct.astype(np.int32).tobytes(**_f())
+        + case.lpbl.astype(np.int32).tobytes(**_f())
+        + b"".join(
+            getattr(case, name).astype(F32).tobytes(**_f())
+            for name in (
+                "pbl",
+                "hol",
+                "dens1",
+                "rdepvht",
+                "zf",
+                "zh",
+                "seddy",
+                "depv",
+                "pldv",
+                "vdemis",
+                "cngrd",
+            )
+        )
+    )
+    raw = _run(BUILD / "harness_vdiff", payload, workdir)
+
+    n_conc = case.cngrd.size
+    n_dep = nspc * ncols * nrows
+    n_sed = nlays * ncols * nrows
+    expected = (n_conc + n_dep + n_sed) * 4
+    if len(raw) != expected:
+        raise RuntimeError(f"{case.name}: got {len(raw)} output bytes, expected {expected}")
+    values = np.frombuffer(raw, dtype=F32)
+    return {
+        "cngrd_out": values[:n_conc].reshape(case.cngrd.shape, order="F").copy(),
+        "ddep": values[n_conc : n_conc + n_dep].reshape((nspc, ncols, nrows), order="F").copy(),
+        "seddy_out": values[n_conc + n_dep :].reshape((nlays, ncols, nrows), order="F").copy(),
+    }
+
+
+def vdiff_golden(case: VdiffCase, workdir: Path) -> dict[str, NDArray[np.generic]]:
+    fields = {
+        name: getattr(case, name)
+        for name in (
+            "convct",
+            "lpbl",
+            "pbl",
+            "hol",
+            "dens1",
+            "rdepvht",
+            "zf",
+            "zh",
+            "seddy",
+            "depv",
+            "pldv",
+            "vdemis",
+            "cngrd",
+        )
+    }
+    return {**fields, "dtsec": np.float32(case.dtsec), **run_vdiff(case, workdir)}
+
+
 #: Every golden family: name prefix, the case list, and how to run one.
 #:
 #: A table rather than a run of loops because it is the thing that grows with
@@ -2009,6 +2224,7 @@ FAMILIES: list[tuple[str, Callable[[], list[Any]], Callable[[Any, Path], dict[st
     ("tri", tri_cases, tri_golden),
     ("matrix1", matrix1_cases, matrix1_golden),
     ("eddyx", eddyx_cases, eddyx_golden),
+    ("vdiff", vdiff_cases, vdiff_golden),
 ]
 
 
