@@ -109,6 +109,29 @@ at `hdiff.F:66` records fixing a related sub-cycling bug — and it is a
 behavioural detail a "clean" rewrite would silently change, so it is ported as
 written and pinned by a test.
 
+## A third thing, found while making the figures
+
+**CMAQ's diffusion sub-step is past the scheme's stability limit whenever
+sub-stepping engages.** `hcdiff3d.F:253` sets `DT = CFC·dx1·dx2/max(K)` with
+`CFC = 0.300`, while an explicit five-point Laplacian needs `r = K·dt/dx² ≤ 0.25`.
+Since `NSTEPS = int(DTSEC/DT) + 1`, once sub-stepping engages `dt → DT` and
+`r → CFC = 0.300`, and the grid-scale mode grows by `|1 − 8r| = 1.4` per
+sub-step.
+
+Verified against the Fortran: `hdiff.F` compiled unmodified produces the same
+blow-up on the same inputs, to the same values, so this is CMAQ's behaviour and
+not a porting artefact.
+
+It does not affect CMAQ's own configurations. At 12 km the stable step is
+~2×10⁵ s, `NSTEPS` is 1, and `dt` is the sync step — far below the limit. It also
+needs an extended region of near-maximal `K`: the 1 km and 500 m golden cases are
+formally past the limit yet stay bounded, because a 7×6 domain with one hot spot
+gives the unstable mode nowhere to grow. Both conditions have to hold at once,
+which is presumably why it has gone unremarked.
+
+The port reproduces it rather than correcting it, on the same principle as the
+frozen halo. `docs/figures/b2/substep_stability.png` shows where the boundary is.
+
 ## Execution order
 
 | Phase | Subplan | Gate |

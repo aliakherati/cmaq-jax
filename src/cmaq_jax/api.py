@@ -26,10 +26,17 @@ from numpy.typing import NDArray
 
 from cmaq_jax.config import GridConfig
 from cmaq_jax.hadv import BoundaryConditions, advance_xyfirst, hadv_step
+from cmaq_jax.hdiff import hdiff_step
 from cmaq_jax.ppm import NonUniformMesh
 from cmaq_jax.vadv import ZadvDiagnostics, zadv
 
-__all__ = ["Meteorology", "advance_xyfirst", "advect_step"]
+__all__ = [
+    "Diffusivity",
+    "Meteorology",
+    "advance_xyfirst",
+    "advect_step",
+    "transport_step",
+]
 
 LAYER_AXIS = 2
 
@@ -111,3 +118,65 @@ def advect_step(
     )
 
     return jnp.moveaxis(advected, 0, LAYER_AXIS), vertical
+
+
+class Diffusivity(NamedTuple):
+    """What horizontal diffusion needs, for one sync step.
+
+    Separate from :class:`Meteorology` because it is *derived* from it rather
+    than read: build it with :func:`cmaq_jax.hdiff.diffusion_coefficients` and
+    :func:`cmaq_jax.hdiff.halo_density`. Keeping the two apart makes it explicit
+    that a run reusing meteorology across steps can reuse these too.
+    """
+
+    densj: Array  # (ncols+2, nrows+2, nlays), rho*J with its halo ring
+    k11: Array  # (ncols+1, nrows+1, nlays), x-face diffusivity
+    k22: Array  # (ncols+1, nrows+1, nlays), y-face diffusivity
+
+
+def transport_step(
+    state: Array,
+    met: Meteorology,
+    diffusivity: Diffusivity,
+    mesh: NonUniformMesh,
+    *,
+    cfg: GridConfig,
+    astep_seconds: NDArray[np.integer],
+    sync_seconds: int,
+    xyfirst: Sequence[bool],
+    diffusion_substeps: int,
+) -> tuple[Array, ZadvDiagnostics]:
+    """One sync step of transport: HADV, then ZADV, then HDIFF.
+
+    The order is ``sciproc.F:250-278``'s, minus the coupling either side, which
+    is a unit conversion rather than transport. It is not a free choice: the
+    vertical flux is diagnosed from the gap horizontal advection opens, and
+    diffusion runs on the result of both.
+
+    ``diffusion_substeps`` is host-side, from
+    :func:`cmaq_jax.hdiff.substep_count`, so the diffusion loop has a static
+    trip count — the same arrangement as ``astep_seconds`` for advection.
+
+    Returns the transported state and the vertical diagnostics. Diffusion has no
+    diagnostics of its own: it cannot fail to converge, having nothing to
+    converge.
+    """
+    advected, vertical = advect_step(
+        state,
+        met,
+        mesh,
+        cfg=cfg,
+        astep_seconds=astep_seconds,
+        sync_seconds=sync_seconds,
+        xyfirst=xyfirst,
+    )
+    diffused = hdiff_step(
+        advected,
+        diffusivity.densj,
+        diffusivity.k11,
+        diffusivity.k22,
+        cfg=cfg,
+        sync_seconds=float(sync_seconds),
+        nsteps=diffusion_substeps,
+    )
+    return diffused, vertical

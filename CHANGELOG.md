@@ -8,6 +8,11 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Added
 
+- **B0-B2 — horizontal diffusion** (`cmaq_jax.hdiff`): deformation, eddy
+  diffusivity, face coefficients and the sub-stepped driver, matched to
+  `deform.F`, `hcdiff3d.F` and `hdiff.F` in both precisions. `transport_step` in
+  `cmaq_jax.api` composes HADV -> ZADV -> HDIFF under one `jit`.
+
 - **A3.5 — `cmaq_jax.io_mcip`**, reading MCIP meteorology in Models-3 I/O API
   format: `UWINDC`/`VWINDC` (with the pre-MCIPv3.5 `UHAT_JD` fallback),
   `DENSA_J`, `JACOBM`, `ZF` and `MSFX2`, transposed from the file's
