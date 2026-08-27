@@ -35,8 +35,8 @@ so each port is validatable on its own.
 | # | Operator | Repo/module | Why this position | Status |
 |---|---|---|---|---|
 | 1 | **Advection** (HADV + ZADV) | `cmaq-jax` | Two self-contained PPM kernels; ~350 lines of real numerics; no chemistry coupling; analytic test cases exist | **done** (`A0`–`A3`) |
-| 2 | Horizontal diffusion | `cmaq-jax` | Small, shares the halo machinery advection builds | **in progress** (`B0`–`B2`) |
-| 3 | Vertical diffusion (ACM2) | `cmaq-jax` | Implicit solve; introduces a tridiagonal solver; couples to deposition | not started |
+| 2 | Horizontal diffusion | `cmaq-jax` | Small, shares the halo machinery advection builds | **done** (`B0`–`B2`) |
+| 3 | Vertical diffusion (ACM2) | `cmaq-jax` | Implicit solve; introduces a tridiagonal solver; couples to deposition | **next** |
 | 4 | Gas chemistry | `saprc-jax` (planned) | Stiff ODE; `som-jax` already proves the diffrax approach | not started |
 | 5 | Aerosol | `tomas-jax` (planned) | Largest and most coupled; last | not started |
 
@@ -64,11 +64,25 @@ Named so they don't creep in:
 the committed-goldens-with-drift-check pattern. New generic plumbing belongs
 there, not here.
 
-## Current project
+## Completed
 
-[`plans/PLAN-hdiff.md`](plans/PLAN-hdiff.md) — chunks `B0.1` … `B2.5`.
+- [`plans/PLAN-advection.md`](plans/PLAN-advection.md) — `A0.1` … `A3.7`.
+- [`plans/PLAN-hdiff.md`](plans/PLAN-hdiff.md) — `B0.1` … `B2.5`.
 
-Completed: [`plans/PLAN-advection.md`](plans/PLAN-advection.md) — chunks
-`A0.1` … `A3.7`. One verification gap remains there: `io_mcip` is tested against
-synthetic I/O API files, not real MCIP output, which needs a `$CMAQ_DATA`
-download.
+`cmaq_jax.api.transport_step` now runs HADV → ZADV → HDIFF under one `jit`.
+
+**Open verification gap:** `io_mcip` is tested against synthetic I/O API files,
+not real MCIP output. Closing it needs a `$CMAQ_DATA` download.
+
+**Two upstream findings**, both reproduced rather than corrected and both
+documented in [`plans/PLAN-hdiff.md`](plans/PLAN-hdiff.md): `hdiff.F`'s halo is
+frozen across sub-steps, making it a Dirichlet condition pinned at t=0 rather
+than the no-flux condition it is described as; and its diffusion sub-step
+(`CFC = 0.300`) sits past the explicit-scheme stability limit of 0.25 whenever
+sub-stepping engages. Neither affects CMAQ's benchmark configurations.
+
+## Next
+
+Vertical diffusion (ACM2). It is the first operator needing an implicit solve,
+so it brings a tridiagonal solver, and it couples to deposition — a wider
+interface than anything in `A` or `B`.
