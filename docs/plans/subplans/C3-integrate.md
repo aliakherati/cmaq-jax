@@ -2,15 +2,17 @@
 
 Parent: [`../PLAN-vdiff.md`](../PLAN-vdiff.md) · Depends on C2
 
-**Gate:** vertical diffusion runs in `sciproc.F` order ahead of transport,
-differentiates, and is benchmarked.
+**Gate: C3.1/C3.2/C3.4 passed.** `science_step` runs VDIFF ahead of the coupled
+transport block, `jax.grad` through `vdiff_step` matches central differences to
+1e-5 relative — including with respect to the diffusivity — and the figures are
+in `docs/figures/c2/`. C3.3 (benchmark) remains.
 
 | Chunk | Deliverable | Success criterion | Verify |
 |---|---|---|---|
-| **C3.1** | `api.py`: `science_step` = VDIFF → HADV → ZADV → HDIFF | Whole step under one `jit` | `pytest tests/unit/test_api.py` |
-| **C3.2** | `tests/differentiability/`: `jax.grad` through `vdiff_step` | Matches central differences to 1e-6 | `pytest tests/differentiability -k vdiff` |
+| **C3.1** ✅ | `api.py`: `science_step` = VDIFF → HADV → ZADV → HDIFF | Whole step under one `jit` | `pytest tests/unit/test_api.py` |
+| **C3.2** ✅ | `tests/differentiability/`: `jax.grad` through `vdiff_step` | Matches central differences to 1e-6 | `pytest tests/differentiability -k vdiff` |
 | **C3.3** | Benchmark: the sequential solves at benchmark resolution | Cost of the layer-scan recorded, CPU and GPU | `python -m cmaq_jax.bench` |
-| **C3.4** | Figures `docs/figures/c2/` + README | Kz profile; convective vs stable evolution; well-mixed approach | `python scripts/make_c2_figures.py` |
+| **C3.4** ✅ | Figures `docs/figures/c2/` + README | Kz profile; convective vs stable evolution; well-mixed approach | `python scripts/make_c2_figures.py` |
 
 ## Notes
 

@@ -2,10 +2,11 @@
 
 Parent: [`../PLAN-vdiff.md`](../PLAN-vdiff.md) · Depends on C1
 
-**Gate: C2.1–C2.4 passed.** `vdiff_step` matches `vdiffacmx.F` across 8 cases in
-both precisions — concentrations worst 9.4 float32 ULPs (on the 46-sub-step
-case; every other is under 2), dry deposition worst 1.3. C2.5 (property tests)
-remains.
+**Gate: passed.** `vdiff_step` matches `vdiffacmx.F` across 8 cases in both
+precisions — concentrations worst 9.4 float32 ULPs (on the 46-sub-step case;
+every other is under 2), dry deposition worst 1.3. Properties hold: a closed
+column conserves mass to 1e-9, a uniform profile is untouched, the CBL
+homogenises, and `jax.grad` matches central differences.
 
 | Chunk | Deliverable | Success criterion | Verify |
 |---|---|---|---|
@@ -13,7 +14,7 @@ remains.
 | **C2.2** ✅ | `vdiff.py`: convective stage — `MBAR`, `MBARKS`, `MDWN`, the first-column matrix | Matches on a convective column; masked correctly above `LCBL` | `pytest tests/regression -k convective` |
 | **C2.3** ✅ | `vdiff.py`: local stage — the tridiagonal assembly and solve | Matches on a stable column, where the convective stage is skipped entirely | `pytest tests/regression -k local` |
 | **C2.4** ✅ | `vdiff.py`: `vdiff_step` — surface exchange, sub-step loop, both stages | Matches the driver golden | `pytest tests/regression -k vdiff_driver` |
-| **C2.5** | Property tests: mass conservation, positivity, well-mixed limit | A column with no surface flux conserves mass; strong mixing → uniform | `pytest tests/properties -k vdiff` |
+| **C2.5** ✅ | Property tests: mass conservation, positivity, well-mixed limit | A column with no surface flux conserves mass; strong mixing → uniform | `pytest tests/properties -k vdiff` |
 
 ## Notes
 
@@ -57,3 +58,18 @@ plain species; only the heterogeneous-HONO branches omit it from the second
 still matched to 0.4 ULPs. Deposition is accumulated rather than solved, so it
 needs its own assertion — and a case with nonzero `PLDV`, which is why one
 exists and why a guard test checks that it does.
+
+**Mass conservation revealed a third upstream finding.** The property test as
+first written failed on a *uniform* column — which should be a no-op — and the
+Fortran turned out to fail identically. `vdiffacmx.F:675` puts an upward-flux
+term in the top row's diagonal with no matching right-hand-side term, so the
+model top is a one-sided sink. It never bites because `eddyx.F` returns zero
+diffusivity for the top layer, so the leak is multiplied by zero. Measured: a
+uniform column with `Kz(top) = 20` loses 0.48% per 300 s step, scaling linearly
+with `Kz(top)` and vanishing at zero.
+
+That makes the operator conservative *by coincidence of two facts*, not by
+construction, so the test suite now guards both: one test asserts the leak
+exists when `Kz(top)` is nonzero, another that zeroing it closes the boundary,
+and a third that `eddy_diffusivity` really does return zero there. See
+`docs/figures/c2/model_top_leak.png`.

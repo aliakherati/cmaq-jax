@@ -29,12 +29,14 @@ from cmaq_jax.hadv import BoundaryConditions, advance_xyfirst, hadv_step
 from cmaq_jax.hdiff import hdiff_step
 from cmaq_jax.ppm import NonUniformMesh
 from cmaq_jax.vadv import ZadvDiagnostics, zadv
+from cmaq_jax.vdiff import ColumnState, SurfaceExchange, vdiff_step
 
 __all__ = [
     "Diffusivity",
     "Meteorology",
     "advance_xyfirst",
     "advect_step",
+    "science_step",
     "transport_step",
 ]
 
@@ -180,3 +182,57 @@ def transport_step(
         nsteps=diffusion_substeps,
     )
     return diffused, vertical
+
+
+def science_step(
+    state: Array,
+    met: Meteorology,
+    diffusivity: Diffusivity,
+    *,
+    vertical: ColumnState,
+    surface: SurfaceExchange,
+    mesh: NonUniformMesh,
+    cfg: GridConfig,
+    astep_seconds: NDArray[np.integer],
+    sync_seconds: int,
+    xyfirst: Sequence[bool],
+    diffusion_substeps: int,
+    vdiff_substeps: int,
+) -> tuple[Array, Array, ZadvDiagnostics]:
+    """One sync step of the transport block: VDIFF, then HADV, ZADV, HDIFF.
+
+    ``sciproc.F:231-278``'s order, and the ordering point that is easy to get
+    wrong: **vertical diffusion runs first, and it runs on uncoupled
+    concentrations**, before ``COUPLE``. It is not part of the coupled block
+    that :func:`transport_step` implements, so it is applied here rather than
+    appended to that chain.
+
+    This port does not implement ``COUPLE``/``DECOUPLE`` — they are a unit
+    conversion, not transport — so ``state`` arrives already in coupled units
+    and the vertical-diffusion stage is applied to it directly. On a real run
+    that conversion would sit between the two calls below. The distinction is
+    recorded rather than silently elided because it changes what the
+    concentrations mean.
+
+    Returns the advanced state, the accumulated dry deposition and the vertical
+    advection diagnostics.
+    """
+    diffused, ddep = vdiff_step(
+        state,
+        vertical,
+        surface,
+        dtsec=float(sync_seconds),
+        max_substeps=vdiff_substeps,
+    )
+    transported, diagnostics = transport_step(
+        diffused,
+        met,
+        diffusivity,
+        mesh,
+        cfg=cfg,
+        astep_seconds=astep_seconds,
+        sync_seconds=sync_seconds,
+        xyfirst=xyfirst,
+        diffusion_substeps=diffusion_substeps,
+    )
+    return transported, ddep, diagnostics

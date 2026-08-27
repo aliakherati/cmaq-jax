@@ -13,7 +13,14 @@ import jax
 import numpy as np
 
 from cmaq_jax.advstep import StepLimits, advstep, sync_top_layer, wind_index
-from cmaq_jax.api import Diffusivity, Meteorology, advance_xyfirst, advect_step, transport_step
+from cmaq_jax.api import (
+    Diffusivity,
+    Meteorology,
+    advance_xyfirst,
+    advect_step,
+    science_step,
+    transport_step,
+)
 from cmaq_jax.config import GridConfig, sigma_layer_thickness
 from cmaq_jax.hadv import BoundaryConditions
 from cmaq_jax.hdiff import (
@@ -27,6 +34,7 @@ from cmaq_jax.hdiff import (
     substep_count,
 )
 from cmaq_jax.ppm import nonuniform_mesh
+from cmaq_jax.vdiff import ColumnState, SurfaceExchange, substep_counts, vdiff_step
 
 NCOLS, NROWS, NLAYS = 12, 10, 6
 DX = 4000.0
@@ -241,3 +249,75 @@ def test_rho_j_still_tracks_the_meteorology() -> None:
         current, _ = step(current, met, diffusivity)
     gap = np.abs(np.asarray(current)[..., -1] - np.asarray(met.rhoj_met)).max()
     assert gap < 0.5 * float(np.asarray(met.rhoj_met).mean())
+
+
+def test_the_science_step_runs_vertical_diffusion_first() -> None:
+    """C3.1 — the full sequence, and the ordering point most easily got wrong.
+
+    ``sciproc.F`` runs VDIFF *before* COUPLE and the transport block, not after
+    it. Composing it the other way round would still run, still conserve mass,
+    and give a different answer — so the test compares against the two stages
+    applied by hand in each order and asserts which one ``science_step`` matches.
+    """
+    cfg, state, met, diffusivity, mesh, schedule, nsub = build()
+    nspc = state.shape[-1]
+
+    face = np.cumsum(np.full(NLAYS, 3000.0 / NLAYS)) + 40.0
+    shape2, shape3 = (NCOLS, NROWS), (NCOLS, NROWS, NLAYS)
+    kz = np.full(shape3, 15.0)
+    kz[..., -1] = 0.0  # as eddyx.F returns; see tests/properties/test_vdiff.py
+    vertical = ColumnState(
+        seddy=kz,
+        zf=np.broadcast_to(face, shape3) + 0.0,
+        zh=np.broadcast_to(face - 20.0, shape3) + 0.0,
+        pbl=np.full(shape2, float(face[4])),
+        lpbl=np.full(shape2, 5, dtype=np.int32),
+        hol=np.full(shape2, -3.0),
+        dens1=np.full(shape2, 1.2),
+        rdepvht=np.full(shape2, 1.0 / face[0]),
+        convective=np.full(shape2, True),
+    )
+    surface = SurfaceExchange(
+        depv=np.full((NCOLS, NROWS, nspc), 0.004),
+        pldv=np.zeros((NCOLS, NROWS, nspc)),
+        emis=np.zeros((NCOLS, NROWS, NLAYS, nspc)),
+    )
+    vsub = int(np.asarray(substep_counts(vertical, float(schedule.sync_seconds))).max())
+
+    common = {
+        "mesh": mesh,
+        "cfg": cfg,
+        "astep_seconds": schedule.astep_seconds,
+        "sync_seconds": schedule.sync_seconds,
+        "xyfirst": (True,) * NLAYS,
+        "diffusion_substeps": nsub,
+    }
+    combined, ddep, _ = science_step(
+        state, met, diffusivity, vertical=vertical, surface=surface, vdiff_substeps=vsub, **common
+    )
+
+    # VDIFF first, then transport -- what sciproc.F does.
+    pre, _ = vdiff_step(
+        state,
+        vertical,
+        surface,
+        dtsec=float(schedule.sync_seconds),
+        max_substeps=vsub,
+    )
+    vdiff_then_transport, _ = transport_step(pre, met, diffusivity, **common)
+
+    # Transport first, then VDIFF -- the plausible wrong order.
+    post, _ = transport_step(state, met, diffusivity, **common)
+    transport_then_vdiff, _ = vdiff_step(
+        post,
+        vertical,
+        surface,
+        dtsec=float(schedule.sync_seconds),
+        max_substeps=vsub,
+    )
+
+    np.testing.assert_allclose(np.asarray(combined), np.asarray(vdiff_then_transport), rtol=1e-12)
+    assert not np.allclose(np.asarray(vdiff_then_transport), np.asarray(transport_then_vdiff)), (
+        "the two orderings agree, so this test cannot tell them apart"
+    )
+    assert np.all(np.asarray(ddep) >= 0.0)
