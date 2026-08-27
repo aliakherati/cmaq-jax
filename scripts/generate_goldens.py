@@ -1080,6 +1080,181 @@ def hadv_golden(case: HadvCase, workdir: Path) -> dict[str, NDArray[np.generic]]
     }
 
 
+@dataclass(frozen=True)
+class HcdiffCase:
+    """One call to HCDIFF3D, the horizontal eddy diffusivity.
+
+    ``uhat_jd``/``vhat_jd`` are the contravariant velocity times Jacobian times
+    density, on the dot grid, exactly as ``deform.F:299-301`` reads them.
+    ``densa_j_bnd`` is the perimeter ring: ``deform.F`` takes the non-WINDOW
+    path, which reads interior and boundary separately and reassembles them,
+    and the halo density divides the wind at the domain-edge faces.
+    """
+
+    name: str
+    uhat_jd: NDArray[np.float32]  # (ncols+1, nrows+1, nlays)
+    vhat_jd: NDArray[np.float32]  # (ncols+1, nrows+1, nlays)
+    densa_j: NDArray[np.float32]  # (ncols, nrows, nlays)
+    densa_j_bnd: NDArray[np.float32]  # (nbndy, nlays), nbndy = 2*(ncols+nrows+2)
+    msfd2: NDArray[np.float32]  # (ncols+1, nrows+1)
+    jdate: int = 2018182
+    jtime: int = 120000
+    note: str = ""
+
+    def __post_init__(self) -> None:
+        ncols_p1, nrows_p1, nlays = self.uhat_jd.shape
+        ncols, nrows = ncols_p1 - 1, nrows_p1 - 1
+        assert self.vhat_jd.shape == self.uhat_jd.shape, self.name
+        assert self.densa_j.shape == (ncols, nrows, nlays), self.name
+        assert self.densa_j_bnd.shape == (2 * (ncols + nrows + 2), nlays), self.name
+        assert self.msfd2.shape == (ncols_p1, nrows_p1), self.name
+
+
+def hcdiff_cases() -> list[HcdiffCase]:
+    """Diffusivity cases, chosen to separate the stages that can hide each other.
+
+    The scheme composes a deformation, a saturating blend and a face average,
+    and a smooth random field exercises all three at once without distinguishing
+    them. Each analytic case below isolates one, so a failure says which stage.
+    """
+    ncols, nrows, nlays = 8, 7, 3
+    nbndy = 2 * (ncols + nrows + 2)
+    rng = np.random.default_rng(20260827)
+    rows = np.arange(nrows + 1, dtype=np.float64)[None, :, None]
+    cols = np.arange(ncols + 1, dtype=np.float64)[:, None, None]
+    shape = (ncols + 1, nrows + 1, nlays)
+    zero = np.zeros(shape)
+
+    def build(
+        name: str,
+        u: NDArray[np.float64],
+        v: NDArray[np.float64],
+        *,
+        rho: float | NDArray[np.float64] = 2.0,
+        msfd2: float | NDArray[np.float64] = 1.0,
+        note: str = "",
+    ) -> HcdiffCase:
+        density = np.broadcast_to(np.asarray(rho, dtype=np.float64), (ncols, nrows, nlays))
+        # The wind arrives already multiplied by rho*J, so build it that way
+        # rather than dividing later -- that is what is actually on the file.
+        face_rho = float(np.mean(density))
+        return HcdiffCase(
+            name=name,
+            uhat_jd=(np.broadcast_to(u, shape) * face_rho).astype(F32),
+            vhat_jd=(np.broadcast_to(v, shape) * face_rho).astype(F32),
+            densa_j=density.astype(F32),
+            densa_j_bnd=np.full((nbndy, nlays), face_rho, dtype=F32),
+            msfd2=np.broadcast_to(
+                np.asarray(msfd2, dtype=np.float64), (ncols + 1, nrows + 1)
+            ).astype(F32),
+            note=note,
+        )
+
+    return [
+        build(
+            "uniform_wind",
+            np.full(shape, 10.0),
+            np.full(shape, -4.0),
+            note="solid-body translation: deformation is identically zero, so the "
+            "diffusivity sits on its KHMIN floor everywhere. Separates 'reads the "
+            "wind' from 'differentiates it'.",
+        ),
+        build(
+            "shear_dudy",
+            3.0 * rows,
+            zero,
+            note="pure shear. deform = |du/dy| = 3/dx2 in the interior, and zero on "
+            "rows 1 and NROWS where deform.F:420 zeroes DUDY.",
+        ),
+        build(
+            "stretch_dudx",
+            5.0 * cols,
+            zero,
+            note="pure stretching, the DF1 term, exact for a linear field.",
+        ),
+        build(
+            "linear_both",
+            3.0 * rows,
+            2.0 * cols,
+            note="both cross terms at once. Rotating this field to (-v, u) must "
+            "leave the deformation unchanged on the strict interior -- it is the "
+            "second invariant of the strain-rate tensor.",
+        ),
+        build(
+            "saturating",
+            1.0e4 * rows,
+            zero,
+            note="deformation large enough that KHA*KHD/(KHA+KHD) is within "
+            "rounding of KHA. Catches an upside-down blend, which looks plausible "
+            "on a mild field.",
+        ),
+        build(
+            "map_factor",
+            3.0 * rows,
+            2.0 * cols,
+            msfd2=1.0 + 0.25 * rng.random((ncols + 1, nrows + 1)),
+            note="non-unit MSFD2. It is ~1 on the benchmark Lambert grid, so a "
+            "dropped multiplication would pass every other case here.",
+        ),
+        build(
+            "variable_density",
+            3.0 * rows,
+            2.0 * cols,
+            rho=1.5 + 0.4 * rng.random((ncols, nrows, nlays)),
+            note="density varying in space, so the wind recovered at each face "
+            "depends on the two-cell average rather than a constant.",
+        ),
+        build(
+            "smooth_random",
+            rng.normal(0.0, 6.0, shape),
+            rng.normal(0.0, 6.0, shape),
+            rho=1.5 + 0.4 * rng.random((ncols, nrows, nlays)),
+            note="no structure to exploit; the case that would catch anything the "
+            "analytic ones agree on for the wrong reason.",
+        ),
+    ]
+
+
+def run_hcdiff(case: HcdiffCase, workdir: Path) -> dict[str, NDArray[np.float32]]:
+    ncols_p1, nrows_p1, nlays = case.uhat_jd.shape
+    ncols, nrows = ncols_p1 - 1, nrows_p1 - 1
+    payload = (
+        struct.pack("<3i", ncols, nrows, nlays)
+        + struct.pack("<2i", case.jdate, case.jtime)
+        + case.uhat_jd.astype(F32).tobytes(**_f())
+        + case.vhat_jd.astype(F32).tobytes(**_f())
+        + case.densa_j.astype(F32).tobytes(**_f())
+        + case.densa_j_bnd.astype(F32).tobytes(**_f())
+        + case.msfd2.astype(F32).tobytes(**_f())
+    )
+    raw = _run(BUILD / "harness_hcdiff3d", payload, workdir)
+
+    field = ncols_p1 * nrows_p1 * nlays
+    expected = (3 * field + 1) * 4
+    if len(raw) != expected:
+        raise RuntimeError(f"{case.name}: got {len(raw)} output bytes, expected {expected}")
+    values = np.frombuffer(raw, dtype=F32)
+    shape = (ncols_p1, nrows_p1, nlays)
+    take = lambda i: values[i * field : (i + 1) * field].reshape(shape, order="F").copy()  # noqa: E731
+    return {
+        "deform": take(0),
+        "k11bar": take(1),
+        "k22bar": take(2),
+        "dt": np.float32(values[3 * field]),
+    }
+
+
+def hcdiff_golden(case: HcdiffCase, workdir: Path) -> dict[str, NDArray[np.generic]]:
+    return {
+        "uhat_jd": case.uhat_jd,
+        "vhat_jd": case.vhat_jd,
+        "densa_j": case.densa_j,
+        "densa_j_bnd": case.densa_j_bnd,
+        "msfd2": case.msfd2,
+        **run_hcdiff(case, workdir),
+    }
+
+
 def zadv_golden(case: ZadvCase, workdir: Path) -> dict[str, NDArray[np.generic]]:
     return {
         "faces": case.faces,
@@ -1189,6 +1364,8 @@ def generate(check: bool) -> Result:
             work.append((f"hadv_{hcase.name}", hadv_golden(hcase, workdir)))
         for zcase2 in zadv_cases():
             work.append((f"zadv_{zcase2.name}", zadv_golden(zcase2, workdir)))
+        for dcase in hcdiff_cases():
+            work.append((f"hcdiff_{dcase.name}", hcdiff_golden(dcase, workdir)))
 
     for name, arrays in work:
         path = GOLDENS / f"{name}.npz"

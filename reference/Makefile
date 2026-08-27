@@ -68,7 +68,8 @@ STENEX_OBJ := $(patsubst $(STENEX)/%.f,$(BUILD)/%.o,$(STENEX_SRC))
 COMMON_OBJ := $(BUILD)/stubs.o $(BUILD)/stubs_driver.o $(STENEX_OBJ)
 
 HARNESSES := $(BUILD)/harness_hppm $(BUILD)/harness_vppm $(BUILD)/harness_ppm_coeffs \
-             $(BUILD)/harness_zfdbc $(BUILD)/harness_hadv $(BUILD)/harness_zadv
+             $(BUILD)/harness_zfdbc $(BUILD)/harness_hadv $(BUILD)/harness_zadv \
+             $(BUILD)/harness_hcdiff3d
 
 .PHONY: all clean
 all: $(HARNESSES)
@@ -137,6 +138,14 @@ $(BUILD)/zadvppmwrf.o: $(BUILD)/vppm.o
 
 $(BUILD)/harness_zadv: $(COMMON_OBJ) $(BUILD)/vppm.o $(BUILD)/zadvppmwrf.o \
                        $(BUILD)/harness_zadv.o
+	$(FC) $(FFLAGS) $^ -o $@
+
+# --- horizontal diffusion -------------------------------------------------
+# hcdiff3d.F calls DEFORM internally; both are vendored and unmodified.
+$(BUILD)/hcdiff3d.o: $(BUILD)/deform.o
+
+$(BUILD)/harness_hcdiff3d: $(COMMON_OBJ) $(BUILD)/deform.o $(BUILD)/hcdiff3d.o \
+                           $(BUILD)/harness_hcdiff3d.o
 	$(FC) $(FFLAGS) $^ -o $@
 
 clean:

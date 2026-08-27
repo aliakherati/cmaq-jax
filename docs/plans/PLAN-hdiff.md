@@ -121,8 +121,6 @@ written and pinned by a test.
 
 Same list as advection, plus:
 
-- `DEFORM3D` edge row/column defined as zero rather than left uninitialised
-  (above).
 - ISAM and DDM-3D (`#ifdef sens`) branches omitted — they are ~40% of
   `hdiff.F`'s line count and duplicate the same update for sensitivity arrays.
 - `MSFD2` (map scale factor at dot points) is read from `GRID_DOT_2D`; on the

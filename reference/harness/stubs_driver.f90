@@ -123,6 +123,18 @@ module CENTRALIZED_IO_MODULE
    ! Map-scale factor squared, read by x_ppm.F only inside the budget block.
    real, allocatable :: MSFX2(:, :)
 
+   ! Map-scale factor squared at dot points, read by hcdiff3d.F. CMAQ takes it
+   ! from GRID_DOT_2D and dimensions it (NCOLS+1, NROWS+1)
+   ! (centralized_io_module.F:5787).
+   real, allocatable :: MSFD2(:, :)
+
+   ! Perimeter fields, for the 'b' form of interpolate_var. deform.F needs one
+   ! (DENSA_J's halo ring) on the non-WINDOW path, which hcontvel.F's early
+   ! RETURN means the advection harnesses never reach.
+   integer :: n_bnd_fields = 0
+   character(len=NAME_LEN) :: bnd_name(MAX_FIELDS) = ' '
+   real, allocatable :: bnd_data(:, :, :)   ! (nbndy, lay, field)
+
    ! The field table. Every entry is stored at full 3-D extent; 2-D requests
    ! take a layer out of it.
    integer :: n_fields = 0
@@ -149,7 +161,51 @@ contains
       if (allocated(MSFX2)) deallocate (MSFX2)
       allocate (MSFX2(ncols, nrows))
       MSFX2 = 1.0
+      if (allocated(MSFD2)) deallocate (MSFD2)
+      allocate (MSFD2(ncols + 1, nrows + 1))
+      MSFD2 = 1.0
+      if (allocated(bnd_data)) deallocate (bnd_data)
+      ! NTHIK = 1, so the perimeter is 2*(ncols + nrows + 2) cells -- matching
+      ! HGRD_DEFN's NBNDY and deform.F's South/East/North/West walk.
+      allocate (bnd_data(2*(ncols + nrows + 2), nlays, MAX_FIELDS))
+      bnd_data = 0.0
+      n_bnd_fields = 0
+      bnd_name = ' '
    end subroutine cio_init
+
+   !> Register a perimeter field, indexed (nbndy, lay).
+   !>
+   !> The order is CMAQ's, and deform.F:264-292 walks it explicitly: South
+   !> (row 0, cols 1..NCOLS+1), East (col NCOLS+1, rows 1..NROWS+1), North
+   !> (row NROWS+1, cols 0..NCOLS), West (col 0, rows 0..NROWS).
+   subroutine cio_put_bndy(vname, values)
+      character(len=*), intent(in) :: vname
+      real, intent(in) :: values(:, :)
+      integer :: slot, i
+
+      slot = 0
+      do i = 1, n_bnd_fields
+         if (trim(bnd_name(i)) == trim(vname)) slot = i
+      end do
+      if (slot == 0) then
+         n_bnd_fields = n_bnd_fields + 1
+         if (n_bnd_fields > MAX_FIELDS) then
+            write (*, '(a)') 'cio_put_bndy: too many fields'
+            stop 1
+         end if
+         slot = n_bnd_fields
+         bnd_name(slot) = vname
+      end if
+      bnd_data(1:size(values, 1), 1:size(values, 2), slot) = values
+   end subroutine cio_put_bndy
+
+   !> Override the dot-point map-scale factor. Left at 1.0 by cio_init, which
+   !> is right for the benchmark Lambert grid; a case that sets it non-unit is
+   !> what actually exercises the multiplication in hcdiff3d.F:195.
+   subroutine cio_put_msfd2(values)
+      real, intent(in) :: values(:, :)
+      MSFD2 = values
+   end subroutine cio_put_msfd2
 
    !> Register a field. Later registrations of the same name overwrite it.
    subroutine cio_put(vname, values)
@@ -223,16 +279,25 @@ contains
       integer, intent(in) :: date, time
       real, intent(out) :: data(:, :)
       integer, intent(in), optional :: lvl
-      integer :: ignored
+      integer :: ignored, slot, i
       character :: ignored_type
 
       ignored = date + time
       ignored_type = type
       if (present(lvl)) ignored = ignored + lvl
-      ! Boundary reads only happen on the CSTAGUV = .FALSE. path, which the
-      ! driver harness does not exercise. Fail loudly rather than return zeros.
-      write (*, '(a)') 'interpolate_var: boundary reads are not supported by the stub: '//trim(vname)
-      stop 1
+
+      slot = 0
+      do i = 1, n_bnd_fields
+         if (trim(bnd_name(i)) == trim(vname)) slot = i
+      end do
+      ! Fail loudly rather than return zeros: a zero halo density would make
+      ! deform.F divide by zero at the domain edge, which is a louder failure
+      ! than it looks -- it produces infinities, not an obviously blank result.
+      if (slot == 0) then
+         write (*, '(a)') 'interpolate_var: no boundary field registered: '//trim(vname)
+         stop 1
+      end if
+      data = bnd_data(1:size(data, 1), 1:size(data, 2), slot)
    end subroutine r_interpolate_var_2db
 
    subroutine r_interpolate_var_3d(vname, date, time, data, fname)
