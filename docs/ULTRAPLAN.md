@@ -36,8 +36,8 @@ so each port is validatable on its own.
 |---|---|---|---|---|
 | 1 | **Advection** (HADV + ZADV) | `cmaq-jax` | Two self-contained PPM kernels; ~350 lines of real numerics; no chemistry coupling; analytic test cases exist | **done** (`A0`–`A3`) |
 | 2 | Horizontal diffusion | `cmaq-jax` | Small, shares the halo machinery advection builds | **done** (`B0`–`B2`) |
-| 3 | Vertical diffusion (ACM2) | `cmaq-jax` | Implicit solve; introduces a tridiagonal solver; couples to deposition | **in progress** (`C0`–`C3`) |
-| 4 | Gas chemistry | `saprc-jax` (planned) | Stiff ODE; `som-jax` already proves the diffrax approach | not started |
+| 3 | Vertical diffusion (ACM2) | `cmaq-jax` | Implicit solve; introduces a tridiagonal solver; couples to deposition | **done** (`C0`–`C3`) |
+| 4 | Gas chemistry | `saprc-jax` (planned) | Stiff ODE; `som-jax` already proves the diffrax approach | **next** |
 | 5 | Aerosol | `tomas-jax` (planned) | Largest and most coupled; last | not started |
 
 Advection first is the deliberate choice: it is the only operator whose kernels
@@ -81,10 +81,43 @@ than the no-flux condition it is described as; and its diffusion sub-step
 (`CFC = 0.300`) sits past the explicit-scheme stability limit of 0.25 whenever
 sub-stepping engages. Neither affects CMAQ's benchmark configurations.
 
-## Current project
+## Completed
 
-[`plans/PLAN-vdiff.md`](plans/PLAN-vdiff.md) — chunks `C0.1` … `C3.4`.
+- [`plans/PLAN-advection.md`](plans/PLAN-advection.md) — `A0.1` … `A3.7`.
+- [`plans/PLAN-hdiff.md`](plans/PLAN-hdiff.md) — `B0.1` … `B2.5`.
+- [`plans/PLAN-vdiff.md`](plans/PLAN-vdiff.md) — `C0.1` … `C3.4`.
 
-Scoped to **transport, not deposition**: deposition velocities and emission
-fluxes are inputs, the way meteorology is an input to advection. The modules
-that compute them (`depv/m3dry`, `depv/stage`) are a separate port.
+`cmaq_jax.api.science_step` runs VDIFF → HADV → ZADV → HDIFF, in `sciproc.F`'s
+order. Every kernel is matched against unmodified Fortran in both precisions.
+
+**Open verification gap:** `io_mcip` is tested against synthetic I/O API files,
+not real MCIP output. Closing it needs a `$CMAQ_DATA` download.
+
+**Not ported, deliberately:** coupling/decoupling (a unit conversion, not
+transport), deposition-velocity calculation (`depv/*`), aerosol sedimentation,
+ISAM and DDM-3D.
+
+## Three upstream findings
+
+All reproduced rather than corrected, all verified against unmodified Fortran,
+and none of them affecting CMAQ's own benchmark configurations. Each is
+documented where it lives.
+
+1. **`hdiff.F`'s halo is frozen across sub-steps**, making it a Dirichlet
+   condition pinned at t=0 rather than the no-flux condition it is described as.
+   Mass flows toward the pinned value — measured at −0.12% to +8.9% depending on
+   the field.
+2. **`hdiff.F`'s diffusion sub-step (`CFC = 0.300`) sits past the explicit
+   scheme's stability limit of 0.25** whenever sub-stepping engages. Needs a
+   fine grid *and* an extended region of near-maximal `K`.
+3. **`vdiffacmx.F`'s local stage leaks through the model top** — the top row's
+   diagonal carries an upward-flux term with no matching right-hand side. It is
+   multiplied by zero only because `eddyx.F` returns zero diffusivity there, so
+   the scheme is conservative by coincidence of two facts rather than by
+   construction.
+
+## Next
+
+Gas chemistry, in a new repo `saprc-jax`. A stiff ODE system rather than a PDE
+operator — a different kind of problem from everything above, and the one
+`som-jax` has already proven the `diffrax` approach on.

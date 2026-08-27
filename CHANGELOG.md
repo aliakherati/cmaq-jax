@@ -8,6 +8,11 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Added
 
+- **C0-C3 — vertical diffusion (ACM2)** (`cmaq_jax.vdiff`): both solvers, the
+  eddy diffusivity, and the two-stage driver, matched to `tri.F`, `matrix1.F`,
+  `eddyx.F` and `vdiffacmx.F` in both precisions. `science_step` in
+  `cmaq_jax.api` runs VDIFF -> HADV -> ZADV -> HDIFF, in `sciproc.F`'s order.
+
 - **B0-B2 — horizontal diffusion** (`cmaq_jax.hdiff`): deformation, eddy
   diffusivity, face coefficients and the sub-stepped driver, matched to
   `deform.F`, `hcdiff3d.F` and `hdiff.F` in both precisions. `transport_step` in
