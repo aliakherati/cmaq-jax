@@ -34,8 +34,8 @@ so each port is validatable on its own.
 
 | # | Operator | Repo/module | Why this position | Status |
 |---|---|---|---|---|
-| 1 | **Advection** (HADV + ZADV) | `cmaq-jax` | Two self-contained PPM kernels; ~350 lines of real numerics; no chemistry coupling; analytic test cases exist | **in progress** |
-| 2 | Horizontal diffusion | `cmaq-jax` | Small, shares the halo machinery advection builds | not started |
+| 1 | **Advection** (HADV + ZADV) | `cmaq-jax` | Two self-contained PPM kernels; ~350 lines of real numerics; no chemistry coupling; analytic test cases exist | **done** (`A0`–`A3`) |
+| 2 | Horizontal diffusion | `cmaq-jax` | Small, shares the halo machinery advection builds | **in progress** (`B0`–`B2`) |
 | 3 | Vertical diffusion (ACM2) | `cmaq-jax` | Implicit solve; introduces a tridiagonal solver; couples to deposition | not started |
 | 4 | Gas chemistry | `saprc-jax` (planned) | Stiff ODE; `som-jax` already proves the diffrax approach | not started |
 | 5 | Aerosol | `tomas-jax` (planned) | Largest and most coupled; last | not started |
@@ -66,4 +66,9 @@ there, not here.
 
 ## Current project
 
-[`plans/PLAN-advection.md`](plans/PLAN-advection.md) — chunks `A0.1` … `A3.x`.
+[`plans/PLAN-hdiff.md`](plans/PLAN-hdiff.md) — chunks `B0.1` … `B2.5`.
+
+Completed: [`plans/PLAN-advection.md`](plans/PLAN-advection.md) — chunks
+`A0.1` … `A3.7`. One verification gap remains there: `io_mcip` is tested against
+synthetic I/O API files, not real MCIP output, which needs a `$CMAQ_DATA`
+download.

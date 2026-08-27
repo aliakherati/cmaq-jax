@@ -1,0 +1,138 @@
+# cmaq-jax — horizontal diffusion
+
+Parent: [`../ULTRAPLAN.md`](../ULTRAPLAN.md) · Owns chunk IDs `B0`–`B2` ·
+Depends on the advection port (`A0`–`A3`) for the grid, halo and harness
+machinery it reuses wholesale.
+
+## What this is
+
+Operator 2 of the ultraplan. `sciproc.F` runs it immediately after `ZADV`:
+
+```
+VDIFF → COUPLE → HADV → ZADV → HDIFF → DECOUPLE → PHOT → CLDPROC → CHEM → AERO
+```
+
+Deformation-dependent horizontal eddy diffusion, in generalised coordinates.
+Four files, 1581 lines, one build option (`multiscale` — there is no
+alternative to select):
+
+```
+hdiff/multiscale/hdiff.F      606   driver: RK11/RK22 faces, sub-step loop, update
+hdiff/multiscale/hcdiff3d.F   256   *** eddy diffusivity from deformation ***
+hdiff/multiscale/deform.F     439   *** wind deformation from UHAT_JD/VHAT_JD ***
+hdiff/multiscale/rho_j.F      280   rho*J on the computational grid
+```
+
+Verified identical on `origin/5.5+` and `main` (`git diff main origin/5.5+ --
+CCTM/src/hdiff/` is empty), same as advection was.
+
+## The numerics
+
+Much simpler than PPM: an **explicit 5-point Laplacian in mixing-ratio space**,
+sub-cycled for stability. No limiter, no reconstruction, no iteration.
+
+**1. Deformation** (`deform.F:424-432`) — the standard Smagorinsky total
+deformation, stretching and shearing combined:
+
+```
+DF1 = du/dx - dv/dy          DF2 = dv/dx + du/dy
+DEFORM = sqrt(DF1^2 + DF2^2)
+```
+
+Winds are `UHAT_JD`/`VHAT_JD` divided by face-interpolated density — the same
+quantity `hcontvel.F` builds, so `cmaq_jax.velocity.face_velocity_from_flux`
+already covers it. The cross terms use gradients *of averages*
+(`deform.F:396-418`), not averages of gradients, and are set to zero on the
+first and last row/column.
+
+**2. Eddy diffusivity** (`hcdiff3d.F:188-200`):
+
+```
+KHA  = (DXB^2)/(dx1*dx2) * KH        resolution-adjusted base, KH = 2000 m^2/s
+ACOEF = ALP^2 * dx1 * dx2            ALP = 0.28
+KHD  = max(KHMIN, ACOEF * DEFORM)    KHMIN = 200 m^2/s
+EDDYH = MSFD2 * KHA*KHD / (KHA + KHD)
+```
+
+The last line is a parallel-resistor blend: it rises with deformation but
+saturates at `KHA`, so a strongly sheared cell cannot run away.
+
+Then flux-averaged onto faces (`hcdiff3d.F:210-230`), each averaging *across*
+its own direction:
+
+```
+K11BAR(C,R) = 0.5*(EDDYH(C,R+1) + EDDYH(C,R))     x faces
+K22BAR(C,R) = 0.5*(EDDYH(C,R)   + EDDYH(C+1,R))   y faces
+```
+
+**3. Stability step** (`hcdiff3d.F:253`) — `DT = CFC * dx1*dx2 / max(K)`,
+`CFC = 0.300`. `hdiff.F` then takes `NSTEPS = int(DTSEC/DT) + 1` uniform
+sub-steps.
+
+**4. Update** (`hdiff.F:509-523`), per species, layer and sub-step, with
+`RK11 = 0.5*(rhoJ(C) + rhoJ(C-1)) * K11BAR` and `q = CGRID/rhoJ`:
+
+```
+CGRID(C,R) = rhoJ(C,R)*q(C,R)
+           + dt/dx1^2 * ( RK11(C+1,R)*(q(C+1,R) - q(C,R)) - RK11(C,R)*(q(C,R) - q(C-1,R)) )
+           + dt/dx2^2 * ( RK22(C,R+1)*(q(C,R+1) - q(C,R)) - RK22(C,R)*(q(C,R) - q(C,R-1)) )
+```
+
+Diffusion acts on the **mixing ratio**, and the flux carries `rho*J` — which is
+why `rho*J` is *not* advected along as an extra slot here, unlike in advection.
+That is the single biggest structural difference from the `A` chunks and the
+thing most likely to be got wrong by analogy.
+
+## Two things found while reading, before writing any code
+
+**`DEFORM3D`'s extra row and column are uninitialised in CMAQ.** `hcdiff3d.F`
+declares it `(NCOLS+1, NROWS+1, NLAYS)` as a local automatic array and passes it
+to `DEFORM` as `INTENT(OUT)` assumed-shape; `deform.F` fills only
+`(1:NCOLS, 1:NROWS)` per layer and never zeroes the rest. `hcdiff3d.F` then
+reads the **full** extent into `EDDYH3D` (its own `EDDYH3D = 0.0` is overwritten
+across `1..NCOLS+1, 1..NROWS+1`), so the last row and column of `K11BAR`/`K22BAR`
+are built from whatever was on the stack.
+
+Those coefficients multiply a gradient that is zero on the first sub-step —
+the halo is seeded with the edge cell's own mixing ratio — so the usual run is
+unaffected. It is not identically zero on *later* sub-steps (see below), so the
+values can leak in. The port defines them as **zero**, which is what the
+explicit `K11BAR(:,NROWS+1) = 0` / `K22BAR(NCOLS+1,:) = 0` boundary zeroing
+implies was intended. B0.3 must zero the array in the harness or goldens will
+not reproduce between runs.
+
+**The halo is frozen across sub-steps.** `HALO_SOUTH`/`NORTH`/`WEST`/`EAST` are
+filled once, before the `DO 344` sub-step loop (`hdiff.F:355-400`), from the
+*initial* mixing ratio; `CONC` is reloaded from `CGRID` every sub-step but the
+halo is not. So the zero-gradient boundary holds exactly only on the first
+sub-step, and drifts slightly after. This is deliberate — the 2009 revision note
+at `hdiff.F:66` records fixing a related sub-cycling bug — and it is a
+behavioural detail a "clean" rewrite would silently change, so it is ported as
+written and pinned by a test.
+
+## Execution order
+
+| Phase | Subplan | Gate |
+|---|---|---|
+| **B0** | [`subplans/B0-foundation.md`](subplans/B0-foundation.md) | Vendored Fortran compiles; goldens for all three kernels |
+| **B1** | [`subplans/B1-kernels.md`](subplans/B1-kernels.md) | `deform`, `eddy_diffusivity`, face coefficients match goldens |
+| **B2** | [`subplans/B2-driver.md`](subplans/B2-driver.md) | `hdiff_step` matches; properties hold; wired into `advect_step`'s sibling |
+
+## Deliberate deviations
+
+Same list as advection, plus:
+
+- `DEFORM3D` edge row/column defined as zero rather than left uninitialised
+  (above).
+- ISAM and DDM-3D (`#ifdef sens`) branches omitted — they are ~40% of
+  `hdiff.F`'s line count and duplicate the same update for sensitivity arrays.
+- `MSFD2` (map scale factor at dot points) is read from `GRID_DOT_2D`; on the
+  Lambert benchmark grid it is ~1, but it is carried rather than assumed.
+
+## Why this is much smaller than advection
+
+No reference-harness invention is needed: `reference/Makefile`, the stub layer,
+the one-process-per-configuration rule and `generate_goldens.py --check` all
+came out of `A0` and are reused as they stand. The numerics are ~120 lines
+against PPM's ~350, with no limiter and no iteration. The realistic risk is not
+the scheme, it is the two structural traps above.
