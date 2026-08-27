@@ -25,8 +25,10 @@ import struct
 import subprocess
 import sys
 import tempfile
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 from numpy.typing import NDArray
@@ -1401,6 +1403,291 @@ def hdiff_golden(case: HdiffCase, workdir: Path) -> dict[str, NDArray[np.generic
     }
 
 
+#: Value written into matrix entries the solvers must never reference --
+#: ``L(1)``/``U(NLAYS)`` for TRI, ``A(1)``/``E(1)`` for MATRIX1. Large enough
+#: that a port which touches one disagrees loudly instead of subtly.
+POISON = np.float32(-9.99e9)
+
+
+@dataclass(frozen=True)
+class TriCase:
+    """One call to TRI, the Thomas solver for ACM2's local stage."""
+
+    name: str
+    sub: NDArray[np.float32]  # (nlays,) subdiagonal; entry 0 unused
+    diag: NDArray[np.float32]  # (nlays,)
+    sup: NDArray[np.float32]  # (nlays,) superdiagonal; last entry unused
+    rhs: NDArray[np.float32]  # (nspcs, nlays)
+    note: str = ""
+
+
+def _tri_matrix(case: TriCase) -> NDArray[np.float64]:
+    """The dense matrix TRI is solving, from CMAQ's storage (``tri.F:40-46``).
+
+    Row ``k`` holds ``L(k)`` at ``k-1``, ``D(k)`` at ``k`` and ``U(k)`` at
+    ``k+1``. Confirmed by residual against the compiled Fortran rather than read
+    off the comment block.
+    """
+    nlays = case.diag.size
+    matrix = np.zeros((nlays, nlays), dtype=np.float64)
+    for k in range(nlays):
+        matrix[k, k] = case.diag[k]
+        if k > 0:
+            matrix[k, k - 1] = case.sub[k]
+        if k < nlays - 1:
+            matrix[k, k + 1] = case.sup[k]
+    return matrix
+
+
+def tri_cases() -> list[TriCase]:
+    """Solver cases. Diagonally dominant unless a case says otherwise, since
+    that is what the ACM2 assembly actually produces."""
+    rng = np.random.default_rng(20260828)
+    cases: list[TriCase] = []
+
+    def build(name: str, nlays: int, nspcs: int, *, dominance: float, note: str) -> TriCase:
+        sub = np.concatenate([[POISON], rng.uniform(-1.0, -0.2, nlays - 1)])
+        sup = np.concatenate([rng.uniform(-1.0, -0.2, nlays - 1), [POISON]])
+        # Diagonal set relative to the off-diagonal row sum, so `dominance`
+        # controls conditioning directly.
+        off = np.zeros(nlays)
+        off[1:] += np.abs(sub[1:])
+        off[:-1] += np.abs(sup[:-1])
+        diag = dominance * off + 0.05
+        return TriCase(
+            name=name,
+            sub=sub.astype(F32),
+            diag=diag.astype(F32),
+            sup=sup.astype(F32),
+            rhs=rng.normal(0.0, 1.0, (nspcs, nlays)).astype(F32),
+            note=note,
+        )
+
+    cases.append(
+        build(
+            "well_conditioned",
+            35,
+            4,
+            dominance=2.0,
+            note="a benchmark-depth column, comfortably diagonally dominant -- "
+            "what the Crank-Nicolson assembly gives at a normal sub-step.",
+        )
+    )
+    cases.append(
+        build(
+            "barely_dominant",
+            35,
+            4,
+            dominance=1.01,
+            note="on the edge of diagonal dominance, where the Thomas algorithm "
+            "is least accurate. A long sub-step with strong mixing approaches this.",
+        )
+    )
+    cases.append(
+        build(
+            "shallow",
+            4,
+            2,
+            dominance=2.0,
+            note="few layers: catches an off-by-one in the sweep that a deep column would dilute.",
+        )
+    )
+
+    # An asymmetric matrix, so a transposed sub/super-diagonal cannot pass.
+    nlays, nspcs = 12, 3
+    sub = np.concatenate([[POISON], np.full(nlays - 1, -0.20)])
+    sup = np.concatenate([np.full(nlays - 1, -0.90), [POISON]])
+    cases.append(
+        TriCase(
+            name="asymmetric",
+            sub=sub.astype(F32),
+            diag=np.full(nlays, 2.5, dtype=F32),
+            sup=sup.astype(F32),
+            rhs=rng.normal(0.0, 1.0, (nspcs, nlays)).astype(F32),
+            note="sub- and super-diagonals deliberately unequal. A symmetric "
+            "matrix would let a transposed pair pass, and that is the natural "
+            "error when porting a banded solver.",
+        )
+    )
+    return cases
+
+
+def run_tri(case: TriCase, workdir: Path) -> dict[str, NDArray[np.generic]]:
+    nspcs, nlays = case.rhs.shape
+    payload = (
+        struct.pack("<2i", nlays, nspcs)
+        + case.sub.astype(F32).tobytes(**_f())
+        + case.diag.astype(F32).tobytes(**_f())
+        + case.sup.astype(F32).tobytes(**_f())
+        + case.rhs.astype(F32).tobytes(**_f())
+    )
+    raw = _run(BUILD / "harness_tri", payload, workdir)
+    expected = case.rhs.size * 4
+    if len(raw) != expected:
+        raise RuntimeError(f"{case.name}: got {len(raw)} output bytes, expected {expected}")
+    return {"x": np.frombuffer(raw, dtype=F32).reshape(case.rhs.shape, order="F").copy()}
+
+
+def tri_golden(case: TriCase, workdir: Path) -> dict[str, NDArray[np.generic]]:
+    return {
+        "sub": case.sub,
+        "diag": case.diag,
+        "sup": case.sup,
+        "rhs": case.rhs,
+        **run_tri(case, workdir),
+    }
+
+
+@dataclass(frozen=True)
+class Matrix1Case:
+    """One call to MATRIX1, the ACM1 solver for the convective stage.
+
+    The matrix is tridiagonal-plus-first-column: every layer in the convective
+    boundary layer couples directly to the surface layer, which is what the
+    non-local plume means. ``col`` is a *column*, not a subdiagonal.
+    """
+
+    name: str
+    col: NDArray[np.float32]  # (nlays,) first column, entry 0 unused
+    diag: NDArray[np.float32]  # (nlays,)
+    sup: NDArray[np.float32]  # (nlays,) sup[L] sits in row L-1; entry 0 unused
+    rhs: NDArray[np.float32]  # (nspcs, nlays)
+    kl: int  # top of the convective boundary layer, 1-based
+    note: str = ""
+
+
+def _matrix1_matrix(case: Matrix1Case) -> NDArray[np.float64]:
+    """The dense matrix MATRIX1 solves, over rows ``1..kl``.
+
+    Row 1:        ``B(1)X(1) + E(2)X(2)``
+    Rows 2..kl-1: ``A(L)X(1) + B(L)X(L) + E(L+1)X(L+1)``
+    Row kl:       ``A(kl)X(1) + B(kl)X(kl)``
+
+    Derived from the back-substitution at ``matrix1.F:96-106`` and confirmed by
+    residual against the compiled Fortran.
+    """
+    kl = case.kl
+    matrix = np.zeros((kl, kl), dtype=np.float64)
+    matrix[0, 0] = case.diag[0]
+    if kl > 1:
+        matrix[0, 1] = case.sup[1]
+    for k in range(1, kl):
+        matrix[k, 0] += case.col[k]
+        matrix[k, k] += case.diag[k]
+        if k < kl - 1:
+            matrix[k, k + 1] = case.sup[k + 1]
+    return matrix
+
+
+def matrix1_cases() -> list[Matrix1Case]:
+    """Convective-stage cases, chosen around the ALPHA product.
+
+    ``matrix1.F`` accumulates ``ALPHA = prod(-E/B)`` down the CBL and divides by
+    a sum weighted with it. How small that gets is the question these cases
+    exist to answer, so the ratio ``|E/B|`` and the CBL depth are what vary.
+    """
+    rng = np.random.default_rng(20260828)
+    cases: list[Matrix1Case] = []
+
+    def build(
+        name: str, nlays: int, nspcs: int, kl: int, *, ratio: float, note: str
+    ) -> Matrix1Case:
+        diag = rng.uniform(2.0, 4.0, nlays)
+        sup = np.concatenate([[POISON], -ratio * diag[1:]])
+        col = np.concatenate([[POISON], rng.uniform(-0.6, -0.1, nlays - 1)])
+        return Matrix1Case(
+            name=name,
+            col=col.astype(F32),
+            diag=diag.astype(F32),
+            sup=sup.astype(F32),
+            rhs=rng.normal(0.0, 1.0, (nspcs, nlays)).astype(F32),
+            kl=kl,
+            note=note,
+        )
+
+    cases.append(
+        build(
+            "shallow_cbl",
+            35,
+            4,
+            kl=6,
+            ratio=0.30,
+            note="a shallow convective boundary layer, ALPHA barely decaying.",
+        )
+    )
+    cases.append(
+        build(
+            "deep_cbl",
+            35,
+            4,
+            kl=28,
+            ratio=0.30,
+            note="a deep CBL: 27 factors of ~0.3, so ALPHA reaches ~1e-14.",
+        )
+    )
+    cases.append(
+        build(
+            "alpha_underflow",
+            35,
+            4,
+            kl=30,
+            ratio=0.05,
+            note="ALPHA driven as small as a realistic column allows -- 29 "
+            "factors of ~0.05 is ~1e-38, at the edge of float32. GAMA is a "
+            "denominator, so this is where the solver would break if it breaks.",
+        )
+    )
+    cases.append(
+        build(
+            "whole_column",
+            20,
+            3,
+            kl=20,
+            ratio=0.40,
+            note="CBL filling the entire column, the largest KL possible.",
+        )
+    )
+    cases.append(
+        build(
+            "minimal_cbl",
+            12,
+            2,
+            kl=2,
+            ratio=0.35,
+            note="KL = 2, the smallest convective stage that runs at all: the "
+            "ALPHA loop executes exactly once.",
+        )
+    )
+    return cases
+
+
+def run_matrix1(case: Matrix1Case, workdir: Path) -> dict[str, NDArray[np.generic]]:
+    nspcs, nlays = case.rhs.shape
+    payload = (
+        struct.pack("<3i", nlays, nspcs, case.kl)
+        + case.col.astype(F32).tobytes(**_f())
+        + case.diag.astype(F32).tobytes(**_f())
+        + case.sup.astype(F32).tobytes(**_f())
+        + case.rhs.astype(F32).tobytes(**_f())
+    )
+    raw = _run(BUILD / "harness_matrix1", payload, workdir)
+    expected = case.rhs.size * 4
+    if len(raw) != expected:
+        raise RuntimeError(f"{case.name}: got {len(raw)} output bytes, expected {expected}")
+    return {"x": np.frombuffer(raw, dtype=F32).reshape(case.rhs.shape, order="F").copy()}
+
+
+def matrix1_golden(case: Matrix1Case, workdir: Path) -> dict[str, NDArray[np.generic]]:
+    return {
+        "col": case.col,
+        "diag": case.diag,
+        "sup": case.sup,
+        "rhs": case.rhs,
+        "kl": np.int32(case.kl),
+        **run_matrix1(case, workdir),
+    }
+
+
 #: How far a regenerated golden may differ from the committed one, in float32
 #: ULPs, before ``--check`` calls it drift.
 #:
@@ -1480,6 +1767,25 @@ def _check_one(
         result.drifted.append(f"{name} ({worst:.1f} float32 ULPs)")
 
 
+#: Every golden family: name prefix, the case list, and how to run one.
+#:
+#: A table rather than a run of loops because it is the thing that grows with
+#: every operator, and a straight-line version had already outgrown ruff's
+#: branch limit by the time vertical diffusion was added.
+FAMILIES: list[tuple[str, Callable[[], list[Any]], Callable[[Any, Path], dict[str, Any]]]] = [
+    ("hppm", hppm_cases, hppm_golden),
+    ("vppm", vppm_cases, vppm_golden),
+    ("coeffs", ppm_coeff_cases, ppm_coeff_golden),
+    ("zfdbc", zfdbc_cases, zfdbc_golden),
+    ("hadv", hadv_cases, hadv_golden),
+    ("zadv", zadv_cases, zadv_golden),
+    ("hcdiff", hcdiff_cases, hcdiff_golden),
+    ("hdiff", hdiff_cases, hdiff_golden),
+    ("tri", tri_cases, tri_golden),
+    ("matrix1", matrix1_cases, matrix1_golden),
+]
+
+
 def generate(check: bool) -> Result:
     build_harness()
     GOLDENS.mkdir(parents=True, exist_ok=True)
@@ -1488,22 +1794,9 @@ def generate(check: bool) -> Result:
     work: list[tuple[str, dict[str, NDArray[np.generic]]]] = []
     with tempfile.TemporaryDirectory() as tmp:
         workdir = Path(tmp)
-        for case in hppm_cases():
-            work.append((f"hppm_{case.name}", hppm_golden(case, workdir)))
-        for vcase in vppm_cases():
-            work.append((f"vppm_{vcase.name}", vppm_golden(vcase, workdir)))
-        for ccase in ppm_coeff_cases():
-            work.append((f"coeffs_{ccase.name}", ppm_coeff_golden(ccase, workdir)))
-        for zcase in zfdbc_cases():
-            work.append((f"zfdbc_{zcase.name}", zfdbc_golden(zcase, workdir)))
-        for hcase in hadv_cases():
-            work.append((f"hadv_{hcase.name}", hadv_golden(hcase, workdir)))
-        for zcase2 in zadv_cases():
-            work.append((f"zadv_{zcase2.name}", zadv_golden(zcase2, workdir)))
-        for dcase in hcdiff_cases():
-            work.append((f"hcdiff_{dcase.name}", hcdiff_golden(dcase, workdir)))
-        for hdcase in hdiff_cases():
-            work.append((f"hdiff_{hdcase.name}", hdiff_golden(hdcase, workdir)))
+        for prefix, cases, golden in FAMILIES:
+            for case in cases():
+                work.append((f"{prefix}_{case.name}", golden(case, workdir)))
 
     for name, arrays in work:
         path = GOLDENS / f"{name}.npz"

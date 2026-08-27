@@ -69,7 +69,8 @@ COMMON_OBJ := $(BUILD)/stubs.o $(BUILD)/stubs_driver.o $(STENEX_OBJ)
 
 HARNESSES := $(BUILD)/harness_hppm $(BUILD)/harness_vppm $(BUILD)/harness_ppm_coeffs \
              $(BUILD)/harness_zfdbc $(BUILD)/harness_hadv $(BUILD)/harness_zadv \
-             $(BUILD)/harness_hcdiff3d $(BUILD)/harness_hdiff
+             $(BUILD)/harness_hcdiff3d $(BUILD)/harness_hdiff \
+             $(BUILD)/harness_tri $(BUILD)/harness_matrix1
 
 .PHONY: all clean
 all: $(HARNESSES)
@@ -153,6 +154,15 @@ $(BUILD)/hdiff.o: $(BUILD)/hcdiff3d.o $(BUILD)/rho_j.o
 
 $(BUILD)/harness_hdiff: $(COMMON_OBJ) $(BUILD)/deform.o $(BUILD)/hcdiff3d.o \
                         $(BUILD)/rho_j.o $(BUILD)/hdiff.o $(BUILD)/harness_hdiff.o
+	$(FC) $(FFLAGS) $^ -o $@
+
+# --- vertical diffusion: the two ACM2 solvers -----------------------------
+# Pure linear algebra -- no meteorology, no I/O API, so the stub surface is just
+# VGRD_DEFN and CGRID_SPCS, both of which the advection stubs already provide.
+$(BUILD)/harness_tri: $(COMMON_OBJ) $(BUILD)/tri.o $(BUILD)/harness_tri.o
+	$(FC) $(FFLAGS) $^ -o $@
+
+$(BUILD)/harness_matrix1: $(COMMON_OBJ) $(BUILD)/matrix1.o $(BUILD)/harness_matrix1.o
 	$(FC) $(FFLAGS) $^ -o $@
 
 clean:

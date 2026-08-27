@@ -9,6 +9,13 @@ can be read against its source without a second checkout.
 The `hdiff/multiscale/*` files were vendored at the same commit as the advection
 files, and are identical on `main` and `5.5+`.
 
+The `vdiff/acm2_m3dry/*` files come from the same commit. **Unlike advection and
+horizontal diffusion, `vdiff` is not identical between `main` and `5.5+`** —
+`acm2_stage/{opddep,vdiffacmx,vdiffproc}.F` differ. All three are in
+`acm2_stage`, which is the non-default `DepMod` and is not ported;
+`acm2_m3dry`, the default (`bldit_cctm.csh:113`), is unchanged between the
+branches.
+
 | | |
 |---|---|
 | Upstream | `git@github.com:aliakherati/CMAQ.git` (fork of `USEPA/CMAQ`) |
@@ -38,6 +45,11 @@ Source path prefix: `CCTM/src/`
 | `hcdiff3d.F` | `hdiff/multiscale/hcdiff3d.F` | `e30ba3c021cdf72d` |
 | `deform.F` | `hdiff/multiscale/deform.F` | `e1f69a1220e5ad90` |
 | `rho_j.F` | `hdiff/multiscale/rho_j.F` | `c48c2b0f3d561ef0` |
+| `tri.F` | `vdiff/acm2_m3dry/tri.F` | `f08404b5b4361493` |
+| `matrix1.F` | `vdiff/acm2_m3dry/matrix1.F` | `5aba51abbc71ba24` |
+| `eddyx.F` | `vdiff/acm2_m3dry/eddyx.F` | `fc9776c4e2683205` |
+| `vdiffacmx.F` | `vdiff/acm2_m3dry/vdiffacmx.F` | `9abcb684e65e1a21` |
+| `conv_cgrid.F` | `vdiff/acm2_m3dry/conv_cgrid.F` | `7b981d7ba9073ade` |
 
 ## Also vendored
 
