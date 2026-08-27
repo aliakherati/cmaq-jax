@@ -139,6 +139,13 @@ addopts = [
     "--strict-markers",
     "--strict-config",
 ]
+filterwarnings = [
+    # netCDF4 1.7.x sets .shape on the array it is handed, which numpy 2.5
+    # deprecated. Raised from Variable.__setitem__ in _netCDF4.pyx, so it fires
+    # on a correctly-shaped contiguous array and nothing here can avoid it.
+    # Remove once netCDF4 stops doing it.
+    "ignore:Setting the shape on a NumPy array has been deprecated:DeprecationWarning",
+]
 markers = [
     "fortran: test requires a gfortran toolchain to build the reference harness",
     "goldens: test requires committed Fortran goldens under data/goldens/",

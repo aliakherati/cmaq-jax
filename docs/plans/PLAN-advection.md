@@ -74,7 +74,21 @@ Each is recorded in `README.md` with its reason.
 There is **no benchmark meteorology available locally** — CMAQ ships run scripts
 but not data, and `$CMAQ_DATA` must be downloaded separately
 (`DOCS/CMAQ_Data.md`). A0–A2 therefore run entirely on synthetic fields.
-`io_mcip.py` (A3) is written against the MCIP variable names already identified
-(`UHAT_JD`, `VHAT_JD`, `DENSA_J`, `JACOBM`, `ZF`, `MSFX2`) but can only be
-exercised once real input exists. This is the one deliverable gated on something
-outside the repo.
+`io_mcip.py` (A3.5) is written and tested, but against **synthetic I/O API
+files** (`tests/fixtures/ioapi.py`) rather than real MCIP output. That covers
+everything about the reader that is a property of the format — the
+`(TSTEP, LAY, ROW, COL)` transpose, the false dot points on the C-staggered
+winds, linear interpolation between hourly records, `VGLVLS` parsing — and it
+ends with a read that drives a real `advect_step` and preserves constancy.
+
+What a synthetic fixture cannot establish is that genuine MCIP files match the
+format as encoded here. Two claims in particular rest on reading MCIP's writer
+(`ctmproc.f90:878`, `init_ctm.f90:1330-1346`) rather than on a file:
+
+* `UWINDC` occupies `(NCOLS+1, NROWS)` of the dot array and `VWINDC`
+  `(NCOLS, NROWS+1)`, the remaining row/column being false dot points;
+* every variable shares one `TFLAG` stamp per record.
+
+Confirming those needs a `$CMAQ_DATA` download. It is the only part of
+advection still gated on something outside the repo — and it is now a
+verification gap, not a missing deliverable.

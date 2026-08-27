@@ -8,6 +8,14 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Added
 
+- **A3.5 — `cmaq_jax.io_mcip`**, reading MCIP meteorology in Models-3 I/O API
+  format: `UWINDC`/`VWINDC` (with the pre-MCIPv3.5 `UHAT_JD` fallback),
+  `DENSA_J`, `JACOBM`, `ZF` and `MSFX2`, transposed from the file's
+  `(TSTEP, LAY, ROW, COL)` to the model's `(COL, ROW, LAY)` and linearly
+  interpolated between hourly records. Tested against synthetic I/O API files
+  (`tests/fixtures/ioapi.py`), ending with a read that drives `advect_step`
+  and preserves constancy.
+
 - **A0.1** — Repository scaffold: package layout, `pyproject.toml` (ruff +
   mypy strict + pytest), CI workflow, MIT license, `CLAUDE.md` working
   agreement.
