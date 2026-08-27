@@ -65,7 +65,7 @@ Requires Python ≥ 3.11. Regenerating Fortran goldens additionally needs
 | `cmaq_jax.hadv` | axis-generic sweep, layer grouping, X-Y/Y-X alternation | A1.4–A1.5 | alpha |
 | `cmaq_jax.vadv` | column solve, flux-matching velocity adjustment, flux diagnosis, CFL sub-stepping | A2.1–A2.4 | alpha |
 | `cmaq_jax.advstep` | CFL analysis → sync step + per-layer `ASTEP` | A3.1 | not started |
-| `cmaq_jax.api` | `advect_step(state, met, cfg)` | A3.2 | not started |
+| `cmaq_jax.api` | `advect_step` — HADV then ZADV, jittable and differentiable | A3.2 | alpha |
 | `cmaq_jax.io_mcip` | MCIP/IOAPI meteorology reader | A3.5 | blocked on met data |
 
 Tracked in [`docs/plans/PLAN-advection.md`](docs/plans/PLAN-advection.md) as

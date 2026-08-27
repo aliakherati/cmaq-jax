@@ -81,7 +81,19 @@ class PPMConstants:
     """Floor on a vertical sub-step. ``zadvppmwrf.F:426`` (``MAX(DTNEW, 1.0)``)."""
 
     max_substeps: int = 30
-    """Cap on vertical CFL sub-steps per column. ``zadvppmwrf.F:126`` (``MAXITER``)."""
+    """Cap on vertical CFL sub-steps per column. ``zadvppmwrf.F:126`` (``MAXITER``).
+
+    Upstream this is an *error* limit — CMAQ calls ``M3EXIT`` on reaching it —
+    but here it is also the trip count of a fixed-length loop, so every column
+    pays for all of it whether or not it needs the steps. Measured, each
+    iteration costs about the same as one column solve, which makes this the
+    single largest lever on the cost of a step.
+
+    Lowering it is safe: :class:`~cmaq_jax.vadv.ZadvDiagnostics` reports an
+    infinite residual for any column that ran out of sub-steps, so a caller can
+    set it to what a given CFL regime actually needs and check rather than
+    assume. 30 is kept as the default because it is what CMAQ permits.
+    """
 
     def __post_init__(self) -> None:
         if self.halo_width < 3:

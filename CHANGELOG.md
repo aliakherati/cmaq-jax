@@ -105,6 +105,13 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - **A2.5/A2.6** — vertical property tests and figures. Column mass is **exactly**
   conserved: the column is closed at both ends, the top because
   `FLX(top) = DRJ*(1 - sum(ds))` and the sigma thicknesses sum to one.
+- **A3.2** — `cmaq_jax.api.advect_step`: the `HADV -> ZADV` pair as `sciproc.F`
+  invokes it, with a `Meteorology` bundle and diagnostics carrying the
+  alternation state and vertical convergence.
+- **A3.4** — `tests/differentiability/`: `jax.grad` through the full 3-D
+  operator, checked against central finite differences (worst 5.4e-6, which is
+  the finite-difference truncation error). Required fixing four sites where a
+  masked branch still poisoned the reverse pass.
 
 ### Changed
 

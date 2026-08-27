@@ -25,6 +25,11 @@ from jax import Array
 from cmaq_jax.config import DEFAULT_PPM, PPMConstants
 from cmaq_jax.ppm import NonUniformMesh, Parabola, ppm_parabola_nonuniform
 
+#: Smallest PPM flux, relative to its target, that the velocity adjustment will
+#: act on. Below this the sqrt-Newton step is meaningless and its derivative
+#: overflows; the face is left alone and the residual reports it.
+_MIN_FLUX_RATIO = 1.0e-6
+
 __all__ = [
     "AdjustedVelocity",
     "ZadvDiagnostics",
@@ -182,16 +187,39 @@ def vppm_adjust_velocity(
 
     def refine(_: int, current: Array) -> Array:
         flux = _face_flux(current, parabola, ds, dt=dt, ppm=ppm)
-        ratio = jnp.where(flux != 0.0, target / flux, 1.0)
         converged = jnp.abs(flux - target) <= ppm.velocity_flux_tolerance * jnp.abs(target)
-        step = jnp.where(ratio > 0.0, jnp.sqrt(jnp.abs(ratio)), 1.0)
+
+        # Guard the *input* of the division and the square root, not just their
+        # output. `jnp.where` evaluates both branches and differentiates both,
+        # so masking a bad value afterwards still lets the discarded branch put
+        # an inf into the reverse pass.
+        #
+        # The floor is relative rather than a bare `flux != 0`. A flux many
+        # orders below its target passes a non-zero test but asks for a
+        # velocity rescaling of sqrt(target/flux) -- 3e7 on measured cases --
+        # which is not a Newton step but nonsense that CMAQ would iterate to
+        # its cap and M3EXIT on. Declining it is the physically right call, and
+        # it is also what stops d/dflux ~ flux**-1.5 from overflowing.
+        # The `> 0` is not redundant with the relative floor. Once a column has
+        # used up its remaining time the sub-step loop keeps calling this with
+        # dt = 0, which makes flux and target both exactly zero -- and
+        # `0 >= 1e-6 * 0` is true, so a bare relative test would go on to divide
+        # 0 by 0. The forward value is masked away; the gradient is not.
+        meaningful = (jnp.abs(flux) > 0.0) & (jnp.abs(flux) >= _MIN_FLUX_RATIO * jnp.abs(target))
+        safe_flux = jnp.where(meaningful, flux, 1.0)
+        ratio = jnp.where(meaningful, target / safe_flux, 1.0)
+        usable = meaningful & (ratio > 0.0)
+        safe_ratio = jnp.where(usable, ratio, 1.0)
+        step = jnp.where(usable, jnp.sqrt(safe_ratio), 1.0)
+
         return jnp.where(active & ~converged, current * step, current)
 
     adjusted = jax.lax.fori_loop(0, ppm.velocity_adjust_iterations, refine, vel)
 
     final = _face_flux(adjusted, parabola, ds, dt=dt, ppm=ppm)
-    scale = jnp.where(jnp.abs(target) > 0.0, jnp.abs(target), 1.0)
-    residual = jnp.where(active, jnp.abs(final - target) / scale, 0.0)
+    nonzero_target = jnp.abs(target) > 0.0
+    scale = jnp.where(nonzero_target, jnp.abs(target), 1.0)
+    residual = jnp.where(active & nonzero_target, jnp.abs(final - target) / scale, 0.0)
     return AdjustedVelocity(vel=adjusted, residual=residual)
 
 
@@ -434,10 +462,15 @@ def zadv(
 
         # Safe column: finish the remaining time in one go. Otherwise take the
         # CFL-limited slice, floored at a second (zadvppmwrf.F:426).
-        limited = jnp.maximum(
-            ppm.cfl_safety * left / jnp.maximum(courant, 1e-30), ppm.min_substep_seconds
-        )
-        step = jnp.where(courant > 1.0, jnp.minimum(limited, left), left)
+        # Substitute the divisor before dividing, rather than clamping it with a
+        # tiny epsilon. `jnp.maximum(courant, 1e-30)` keeps the *value* finite,
+        # but the reverse pass differentiates the division too, and
+        # d(left/c)/dc = -left/c**2 at c = 1e-30 is 1e60 -- it overflows to inf
+        # and comes back as NaN, even though the branch is discarded.
+        overshooting = courant > 1.0
+        safe_courant = jnp.where(overshooting, courant, 1.0)
+        limited = jnp.maximum(ppm.cfl_safety * left / safe_courant, ppm.min_substep_seconds)
+        step = jnp.where(overshooting, jnp.minimum(limited, left), left)
         active = left > 0.0
 
         advected, adjusted = vppm(state, vel, flx, ds, mesh, dt=step, ppm=ppm)
