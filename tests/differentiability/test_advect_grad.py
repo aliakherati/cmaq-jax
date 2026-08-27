@@ -204,3 +204,79 @@ class TestComposition:
         numeric = central_difference(loss, state, index)
         assert jnp.all(jnp.isfinite(jax.grad(loss)(state)))
         assert abs(analytic - numeric) <= 1e-4 * max(abs(numeric), 1.0)
+
+
+class TestTheOperatorHasAKinkAtZero:
+    """PPM's limiter and the outflow condition both clamp at zero.
+
+    A tracer sitting exactly at zero is at a corner of the operator: the
+    gradient there is a one-sided derivative, and a *central* finite difference
+    straddles the corner and matches neither side. That is a property of the
+    scheme rather than a defect in the port, but it is a trap for anyone
+    validating gradients from a clean initial state -- the natural first thing
+    to try.
+
+    It takes a few steps to appear. Measured worst ``|grad - fd|`` as a
+    fraction of peak sensitivity:
+
+    ==========  =======  =======  =======
+    background  1 step   4 steps  8 steps
+    ==========  =======  =======  =======
+    0.0         0.0      8.4e-2   2.9e-1
+    1.0         9.2e-12  6.0e-11  1.1e-10
+    ==========  =======  =======  =======
+
+    One step from an all-zero field agrees exactly: the perturbation has not
+    spread far enough to flip a limiter branch yet. That is why these tests run
+    several steps, and why an earlier single-step version of this reported no
+    disagreement at all.
+    """
+
+    STEPS = 4
+
+    def _loss(self, cfg, mesh, met):
+        def loss(initial):
+            current = initial
+            for _ in range(self.STEPS):
+                current = step(current, met.uhat, met.vhat, cfg, mesh=mesh, met=met)
+            return current[3, 2, 4, 0]
+
+        return loss
+
+    @staticmethod
+    def _seed(state, background: float):
+        rhoj = state[..., -1]
+        return jnp.stack([background * rhoj, rhoj], axis=-1)
+
+    def test_a_positive_background_agrees_with_finite_differences(self) -> None:
+        cfg, mesh, state, met = setup()
+        loss = self._loss(cfg, mesh, met)
+        seeded = self._seed(state, 1.0)
+        gradient = jax.grad(loss)(seeded)
+        peak = float(jnp.abs(gradient).max())
+
+        for index in ((2, 2, 3, 0), (1, 3, 2, 0), (3, 1, 5, 0)):
+            numeric = central_difference(loss, seeded, index)
+            assert abs(float(gradient[index]) - numeric) <= 1e-6 * peak
+
+    def test_a_zero_background_does_not_and_that_is_expected(self) -> None:
+        """Documented rather than worked around.
+
+        If this ever starts agreeing, the limiter has stopped clamping and
+        something more important than a finite-difference check is wrong.
+        """
+        cfg, mesh, state, met = setup()
+        loss = self._loss(cfg, mesh, met)
+        seeded = self._seed(state, 0.0)
+        gradient = jax.grad(loss)(seeded)
+        assert jnp.all(jnp.isfinite(gradient)), "the gradient must stay finite at the kink"
+
+        peak = float(jnp.abs(gradient).max())
+        worst = max(
+            abs(float(gradient[index]) - central_difference(loss, seeded, index))
+            for index in ((2, 2, 3, 0), (1, 3, 2, 0), (3, 1, 5, 0))
+        )
+        assert worst > 1e-3 * peak, (
+            "a central difference now agrees at zero concentration; the limiter's "
+            "clamp appears to have gone"
+        )

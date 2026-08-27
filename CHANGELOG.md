@@ -119,6 +119,10 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   over many sync steps, on a schedule `advstep` chose.
 - **A3.6** — `python -m cmaq_jax.bench`: timing at benchmark resolution, with
   the vertical sub-step cap broken out as the main cost lever.
+- **A3.7** — `scripts/make_a3_figures.py` and `docs/figures/a3/`: an adjoint
+  source-receptor footprint and a scaling study. Documents that PPM's limiter
+  makes the operator non-differentiable at exactly zero concentration, with
+  tests pinning both sides of it.
 
 ### Changed
 

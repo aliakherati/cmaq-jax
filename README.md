@@ -87,6 +87,15 @@ regenerable via `scripts/make_<chunk>_figures.py`.
 | [`transport.png`](docs/figures/a0/transport.png) | A Gaussian and a square wave after one full revolution (400 steps). The Gaussian loses 0.9% of its peak to numerical diffusion; the square wave keeps full amplitude with no undershoot below zero or overshoot above one. |
 | [`vertical_stretching.png`](docs/figures/a0/vertical_stretching.png) | The non-uniform reconstruction on 35 CMAQ-like sigma layers, 6× thicker aloft than at the surface, with the resulting edge values, slope and curvature. |
 
+**A3 — the assembled operator**
+
+Described in [`docs/figures/a3/README.md`](docs/figures/a3/README.md).
+
+| File | What it shows |
+|---|---|
+| [`adjoint_footprint.png`](docs/figures/a3/adjoint_footprint.png) | One reverse pass answers a source-receptor question — which upwind cells the concentration at a chosen cell came from. No adjoint was written; this is the forward code differentiated. Checked against finite differences where that check is itself reliable. |
+| [`scaling.png`](docs/figures/a3/scaling.png) | Cost against domain size, species count and the vertical sub-step cap. Throughput improves with species count as fixed overhead amortises. |
+
 **A2 — vertical advection**
 
 Described in [`docs/figures/a2/README.md`](docs/figures/a2/README.md).

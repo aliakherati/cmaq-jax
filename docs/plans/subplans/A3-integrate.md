@@ -15,7 +15,7 @@ differences, and CPU/GPU timings are recorded.
 | **A3.4** ✅ | `tests/differentiability/`: `jax.grad` w.r.t. wind and initial field | Gradients match central finite differences to 1e-6 relative | `pytest tests/differentiability` |
 | **A3.5** | `io_mcip.py`: read MCIP/IOAPI meteorology via `xarray` | Loads `UHAT_JD`, `VHAT_JD`, `DENSA_J`, `JACOBM`, `ZF`, `MSFX2`; transposes to `(col,row,lay,spc)` | *blocked on real met data* |
 | **A3.6** ✅ | `cmaq_jax.bench` — CPU/GPU timing at benchmark resolution | Timings recorded for 100×105×35, ~80 species | `python -m cmaq_jax.bench` |
-| **A3.7** | Figures `docs/figures/a3/` + README status table final | Scaling plot; gradient-check plot | `python scripts/make_a3_figures.py` |
+| **A3.7** ✅ | Figures `docs/figures/a3/` + README status table final | Scaling plot; gradient-check plot | `python scripts/make_a3_figures.py` |
 
 ## Notes
 
