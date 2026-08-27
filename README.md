@@ -86,6 +86,16 @@ regenerable via `scripts/make_<chunk>_figures.py`.
 | [`transport.png`](docs/figures/a0/transport.png) | A Gaussian and a square wave after one full revolution (400 steps). The Gaussian loses 0.9% of its peak to numerical diffusion; the square wave keeps full amplitude with no undershoot below zero or overshoot above one. |
 | [`vertical_stretching.png`](docs/figures/a0/vertical_stretching.png) | The non-uniform reconstruction on 35 CMAQ-like sigma layers, 6× thicker aloft than at the surface, with the resulting edge values, slope and curvature. |
 
+**A2 — vertical advection**
+
+Described in [`docs/figures/a2/README.md`](docs/figures/a2/README.md).
+
+| File | What it shows |
+|---|---|
+| [`flux_diagnosis.png`](docs/figures/a2/flux_diagnosis.png) | There is no vertical wind to read — the flux is diagnosed from the density mismatch. The ground is pinned closed; the model top closes itself, because the sigma thicknesses sum to one and the flux recurrence cancels there. |
+| [`vertical_transport.png`](docs/figures/a2/vertical_transport.png) | One sync step, and what repeating it converges to. The density gap stops at exactly the column-mean mismatch — vertical flux conserves column mass, so it can redistribute an offset but never remove one. |
+| [`substepping.png`](docs/figures/a2/substepping.png) | Mismatch drives Courant, Courant drives sub-steps, and a grid of columns needing one to several sub-steps advances together in one masked fixed-count loop. |
+
 **A1 — through the real driver**
 
 Described in [`docs/figures/a1/README.md`](docs/figures/a1/README.md).

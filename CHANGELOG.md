@@ -102,6 +102,9 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   golden-tests the whole vertical chain; 7 `zadv_*` goldens cover both CFL
   regimes (Courant 0.08 to 2.25, one to three sub-steps). Agreement with the
   Fortran: worst case 1.6 float32 ULPs, in both precisions.
+- **A2.5/A2.6** — vertical property tests and figures. Column mass is **exactly**
+  conserved: the column is closed at both ends, the top because
+  `FLX(top) = DRJ*(1 - sum(ds))` and the sigma thicknesses sum to one.
 
 ### Changed
 

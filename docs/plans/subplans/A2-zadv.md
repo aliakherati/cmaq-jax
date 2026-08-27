@@ -15,8 +15,8 @@ column mass is conserved.
 | **A2.2** ✅ | `vadv.py`: `vppm_adjust_velocity` (`vppm.F:200-246`) — fixed-count sqrt-Newton with per-face masking | Converges to the Fortran's 1e-3 tolerance in ≤8 iterations on all golden cases; residual reported | `pytest tests/unit/test_vel_adjust.py` |
 | **A2.3** ✅ | `vadv.py`: `vppm()` — adjusted velocity applied to all species | Matches `vppm` goldens end-to-end | `pytest tests/regression -k vppm` |
 | **A2.4** ✅ | `vadv.py`: `zadv()` — per-column CFL sub-stepping (`zadvppmwrf.F:412-459`) | Fixed-count `fori_loop` with `dt_remaining` masking; non-convergence surfaces in diagnostics | `pytest tests/unit/test_zadv.py` |
-| **A2.5** | Property tests: column mass conservation, ρ·J reproduction, positivity, vertical constancy | All pass across sigma profiles and CFL regimes | `pytest tests/properties -k zadv` |
-| **A2.6** | Figures `docs/figures/a2/` | Diagnosed `w` profile; ρ·J reproduction error vs. layer; sub-step count map | `python scripts/make_a2_figures.py` |
+| **A2.5** ✅ | Property tests: column mass conservation, ρ·J reproduction, positivity, vertical constancy | All pass across sigma profiles and CFL regimes | `pytest tests/properties -k zadv` |
+| **A2.6** ✅ | Figures `docs/figures/a2/` | Diagnosed `w` profile; ρ·J reproduction error vs. layer; sub-step count map | `python scripts/make_a2_figures.py` |
 
 ## Notes
 
