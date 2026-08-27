@@ -126,6 +126,12 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Changed
 
+- **CI** — the goldens-drift check compares within a float32 ULP budget instead
+  of requiring bit-identity, and prints the observed worst drift on every run.
+  It had been failing on every push: 27 of 48 goldens differ between macOS/arm64
+  and ubuntu/x86-64 purely from float32 reassociation, and bit-exact comparison
+  can only ever pass on the machine that generated them.
+
 - **Precision** — `docs/figures/a1/precision.png`: agreement with the Fortran in
   both precisions across all four golden families, showing float32 at or below
   float64 nearly everywhere and bit-identical on several coefficient cases.

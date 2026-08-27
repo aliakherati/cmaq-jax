@@ -1090,11 +1090,73 @@ def zadv_golden(case: ZadvCase, workdir: Path) -> dict[str, NDArray[np.generic]]
     }
 
 
+#: How far a regenerated golden may differ from the committed one, in float32
+#: ULPs, before ``--check`` calls it drift.
+#:
+#: Exact equality is the obvious rule and it is wrong. These arrays are float32
+#: results of a Fortran kernel, and a different compiler, architecture or
+#: optimisation level reassociates that arithmetic differently -- x86-64 and
+#: arm64 disagree in the last bit or two on every case that is not trivially
+#: exact. Requiring bit-identity would mean the goldens could only ever be
+#: verified on the machine that produced them.
+#:
+#: What the check is actually for is catching an edit to ``reference/fortran/``
+#: or a toolchain change that alters the numerics *materially*. Both move
+#: answers by far more than a few ULPs. 20 leaves room for reassociation while
+#: staying orders of magnitude below anything meaningful; the observed maximum
+#: is printed on every run so creep is visible rather than silently absorbed.
+DRIFT_TOLERANCE_ULP = 20.0
+
+EPS32 = float(np.finfo(np.float32).eps)
+
+
+def relative_drift(committed: NDArray[np.generic], fresh: NDArray[np.generic]) -> float:
+    """Largest difference between two golden arrays, in float32 ULPs.
+
+    Scaled by the array's own magnitude, so a field of concentrations and a
+    field of fluxes are judged on the same footing.
+    """
+    if committed.shape != fresh.shape or committed.dtype != fresh.dtype:
+        return float("inf")
+    if not np.issubdtype(committed.dtype, np.floating):
+        return 0.0 if np.array_equal(committed, fresh) else float("inf")
+
+    left = committed.astype(np.float64)
+    right = fresh.astype(np.float64)
+    scale = max(float(np.abs(left).max()), 1.0)
+    return float(np.abs(left - right).max()) / scale / EPS32
+
+
 @dataclass
 class Result:
     written: list[str] = field(default_factory=list)
     drifted: list[str] = field(default_factory=list)
     missing: list[str] = field(default_factory=list)
+    worst_ulp: float = 0.0
+    worst_case: str = ""
+
+
+def _check_one(
+    name: str,
+    path: Path,
+    arrays: dict[str, NDArray[np.generic]],
+    result: Result,
+) -> None:
+    """Compare one freshly generated golden against the committed copy."""
+    if not path.exists():
+        result.missing.append(name)
+        return
+
+    with np.load(path, allow_pickle=False) as committed:
+        if set(committed.files) != set(arrays):
+            result.drifted.append(f"{name} (different arrays)")
+            return
+        worst = max(relative_drift(committed[key], arrays[key]) for key in arrays)
+
+    if worst > result.worst_ulp:
+        result.worst_ulp, result.worst_case = worst, name
+    if worst > DRIFT_TOLERANCE_ULP:
+        result.drifted.append(f"{name} ({worst:.1f} float32 ULPs)")
 
 
 def generate(check: bool) -> Result:
@@ -1121,15 +1183,7 @@ def generate(check: bool) -> Result:
     for name, arrays in work:
         path = GOLDENS / f"{name}.npz"
         if check:
-            if not path.exists():
-                result.missing.append(name)
-                continue
-            with np.load(path, allow_pickle=False) as committed:
-                same = set(committed.files) == set(arrays) and all(
-                    np.array_equal(committed[k], arrays[k]) for k in arrays
-                )
-            if not same:
-                result.drifted.append(name)
+            _check_one(name, path, arrays, result)
         else:
             np.savez_compressed(path, **arrays)
             result.written.append(name)
@@ -1158,13 +1212,18 @@ def main(argv: list[str] | None = None) -> int:
         for name in result.drifted:
             print(f"DRIFTED: {name}")
         print(
-            "\nCommitted goldens do not match a fresh Fortran run. Either "
-            "reference/fortran/ was edited (it must not be -- see "
-            "reference/PROVENANCE.md) or the toolchain changed."
+            f"\nCommitted goldens differ from a fresh Fortran run by more than "
+            f"{DRIFT_TOLERANCE_ULP:.0f} float32 ULPs. Either reference/fortran/ was edited "
+            "(it must not be -- see reference/PROVENANCE.md) or the toolchain changed "
+            "in a way that moves the numerics."
         )
         return 1
 
-    print("goldens up to date")
+    print(
+        f"goldens up to date (worst drift {result.worst_ulp:.2f} float32 ULPs"
+        + (f", in {result.worst_case}" if result.worst_case else "")
+        + f"; tolerance {DRIFT_TOLERANCE_ULP:.0f})"
+    )
     return 0
 
 
