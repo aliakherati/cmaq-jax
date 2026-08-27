@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Time a full advection step.
+"""Time a full transport step.
 
     python -m cmaq_jax.bench                       # benchmark-sized domain
     python -m cmaq_jax.bench --ncols 50 --nrows 50
@@ -27,6 +27,7 @@ from cmaq_jax.api import Meteorology, advect_step
 from cmaq_jax.config import DEFAULT_PPM, GridConfig, sigma_layer_thickness
 from cmaq_jax.hadv import BoundaryConditions
 from cmaq_jax.ppm import nonuniform_mesh
+from cmaq_jax.vdiff import ColumnState, SurfaceExchange, substep_counts, vdiff_step
 
 
 def build(ncols: int, nrows: int, nlays: int, *, nspc: int, dtype: str, substeps: int):
@@ -78,6 +79,60 @@ def time_step(fn, *args, repeats: int) -> float:
         result = fn(*args)
     jax.block_until_ready(jax.tree.leaves(result)[0])
     return (time.perf_counter() - start) / repeats * 1e3
+
+
+def _bench_vdiff(args: argparse.Namespace) -> None:
+    """Time ACM2 vertical diffusion, and the sequential layer scan inside it.
+
+    The question the plan left open: both ACM2 solvers are first-order
+    recurrences over layers, so each sub-step costs two scans of length
+    ``nlays``. That is nothing on a CPU; on a GPU a short sequential scan can
+    dominate a kernel that is otherwise fully parallel over columns. Measuring
+    it is the point -- if it turns out to dominate, the fix is a parallel cyclic
+    reduction, which is a real change and belongs in its own chunk rather than
+    being smuggled in.
+    """
+    ncols, nrows, nlays = args.ncols, args.nrows, args.nlays
+    nspc = args.nspc
+    rng = np.random.default_rng(20260828)
+
+    face = np.linspace(40.0, 15000.0, nlays)
+    shape2, shape3 = (ncols, nrows), (ncols, nrows, nlays)
+    kz = 1.0 + 60.0 * np.exp(-face / 1200.0)[None, None, :] * np.ones(shape3)
+    kz[..., -1] = 0.0  # as eddyx.F returns
+
+    state = ColumnState(
+        seddy=jnp.asarray(kz),
+        zf=jnp.asarray(np.broadcast_to(face, shape3)),
+        zh=jnp.asarray(np.broadcast_to(face - 20.0, shape3)),
+        pbl=jnp.asarray(np.full(shape2, 1200.0)),
+        lpbl=jnp.asarray(np.full(shape2, 12, dtype=np.int32)),
+        hol=jnp.asarray(np.full(shape2, -3.0)),
+        dens1=jnp.asarray(np.full(shape2, 1.2)),
+        rdepvht=jnp.asarray(np.full(shape2, 1.0 / face[0])),
+        convective=jnp.asarray(np.full(shape2, True)),
+    )
+    surface = SurfaceExchange(
+        depv=jnp.asarray(np.full((ncols, nrows, nspc), 0.005)),
+        pldv=jnp.asarray(np.zeros((ncols, nrows, nspc))),
+        emis=jnp.asarray(np.zeros((ncols, nrows, nlays, nspc))),
+    )
+    conc = jnp.asarray(1.0 + rng.random((ncols, nrows, nlays, nspc)))
+
+    sync = 300.0
+    needed = int(np.asarray(substep_counts(state, sync)).max())
+    print(f"\nvertical diffusion (ACM2), {nspc} species, sync step {sync:.0f} s:")
+    print(f"  sub-steps needed: {needed}")
+
+    for bound in sorted({needed, 1, 4, 16}):
+        step = jax.jit(partial(vdiff_step, dtsec=sync, max_substeps=bound))
+        elapsed = time_step(step, conc, state, surface, repeats=max(args.repeats // 2, 3))
+        per_scan = elapsed / bound / 2.0  # two solves per sub-step
+        marker = "  <- what this column needs" if bound == needed else ""
+        print(
+            f"  max_substeps={bound:3d}: {elapsed:8.2f} ms"
+            f"   ({per_scan:6.3f} ms per layer-scan pair){marker}"
+        )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -132,6 +187,8 @@ def main(argv: list[str] | None = None) -> int:
     print(
         f"simulated day : {milliseconds * 86400 / schedule.sync_seconds / 1e3:8.2f} s of wall time"
     )
+
+    _bench_vdiff(args)
 
     # max_substeps is the largest single lever on cost; show what it buys.
     print("\ncost of the vertical sub-step cap (see PPMConstants.max_substeps):")
