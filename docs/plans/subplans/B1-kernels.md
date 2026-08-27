@@ -4,14 +4,18 @@ Parent: [`../PLAN-hdiff.md`](../PLAN-hdiff.md) · Depends on B0
 
 The three quantities the update needs, each matched to its golden.
 
-**Gate:** deformation, eddy diffusivity and the face-averaged coefficients all
-match the Fortran in both float32 and float64.
+**Gate: passed.** All three match the Fortran in both precisions, worst 5.4
+float32 ULPs across 8 cases — and that worst case is `variable_density`'s face
+coefficients, where the density division amplifies rounding. Deformation itself
+is bit-exact on 7 of 8 cases and within 0.17 ULPs on the eighth, so it is pinned
+separately at a 1-ULP budget rather than being allowed to hide inside the
+chain's looser tolerance.
 
 | Chunk | Deliverable | Success criterion | Verify |
 |---|---|---|---|
-| **B1.1** | `hdiff.py`: `deformation` (`deform.F:352-432`) | Matches goldens; zero for solid-body translation; invariant under frame rotation | `pytest tests/regression -k deform` |
-| **B1.2** | `hdiff.py`: `eddy_diffusivity` (`hcdiff3d.F:180-200`) | Matches goldens; `>= KHMIN`-derived floor; saturates at `KHA` as deformation grows | `pytest tests/unit -k diffusivity` |
-| **B1.3** | `hdiff.py`: `face_coefficients` → `K11BAR`/`K22BAR`, and `stable_timestep` | Matches goldens incl. the zeroed last row/column | `pytest tests/regression -k coefficients` |
+| **B1.1** ✅ | `hdiff.py`: `deformation` (`deform.F:352-432`) | Matches goldens; zero for solid-body translation; invariant under frame rotation | `pytest tests/regression -k deform` |
+| **B1.2** ✅ | `hdiff.py`: `eddy_diffusivity` (`hcdiff3d.F:180-200`) | Matches goldens; `>= KHMIN`-derived floor; saturates at `KHA` as deformation grows | `pytest tests/unit -k diffusivity` |
+| **B1.3** ✅ | `hdiff.py`: `face_coefficients` → `K11BAR`/`K22BAR`, and `stable_timestep` | Matches goldens incl. the zeroed last row/column | `pytest tests/regression -k coefficients` |
 
 ## Notes
 
@@ -36,3 +40,11 @@ separates "reads the wind" from "computes the gradient correctly".
 test at large deformation: a cell in strong shear must not get an unbounded
 diffusivity, and getting the blend upside-down would still look plausible on a
 mild field.
+
+**`halo_density` and `contravariant_winds` were not in the original chunk list.**
+`deform.F` recovers the wind by dividing `UHAT_JD` by a density that includes a
+one-cell halo ring read separately from the boundary file
+(`deform.F:250-332`). That is part of the port, not test plumbing: substituting
+a zero-gradient extrapolation for the ring changes the answer wherever the
+density varies along the boundary, which is why the `variable_density` and
+`smooth_random` golden cases exist.
