@@ -112,6 +112,13 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   operator, checked against central finite differences (worst 5.4e-6, which is
   the finite-difference truncation error). Required fixing four sites where a
   masked branch still poisoned the reverse pass.
+- **A3.1** — `cmaq_jax.advstep`: the CFL and divergence limits that choose the
+  sync step and each layer's advection step, including the `SIGMA_SYNC_TOP`
+  split that keeps a jet aloft from slowing the whole model.
+- **A3.3** — `tests/properties/test_end_to_end.py`: the two operators together,
+  over many sync steps, on a schedule `advstep` chose.
+- **A3.6** — `python -m cmaq_jax.bench`: timing at benchmark resolution, with
+  the vertical sub-step cap broken out as the main cost lever.
 
 ### Changed
 

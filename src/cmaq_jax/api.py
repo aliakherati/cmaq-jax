@@ -29,7 +29,7 @@ from cmaq_jax.hadv import BoundaryConditions, advance_xyfirst, hadv_step
 from cmaq_jax.ppm import NonUniformMesh
 from cmaq_jax.vadv import ZadvDiagnostics, zadv
 
-__all__ = ["Meteorology", "advect_step"]
+__all__ = ["Meteorology", "advance_xyfirst", "advect_step"]
 
 LAYER_AXIS = 2
 
@@ -50,18 +50,6 @@ class Meteorology(NamedTuple):
     bcon: BoundaryConditions
 
 
-class AdvectionDiagnostics(NamedTuple):
-    """What the step had to do, and whether anything failed quietly.
-
-    ``xyfirst`` is the sweep-order state to carry into the next call. The rest
-    comes from the vertical solve, where the failure modes live: a column that
-    exhausted its sub-steps reports an infinite ``residual``.
-    """
-
-    xyfirst: tuple[bool, ...]
-    vertical: ZadvDiagnostics
-
-
 def advect_step(
     state: Array,
     met: Meteorology,
@@ -71,12 +59,23 @@ def advect_step(
     astep_seconds: NDArray[np.integer],
     sync_seconds: int,
     xyfirst: Sequence[bool],
-) -> tuple[Array, AdvectionDiagnostics]:
+) -> tuple[Array, ZadvDiagnostics]:
     """One sync step of three-dimensional advection.
 
     ``state`` is ``(ncols, nrows, nlays, nspc)`` in coupled units. Returns the
-    advected state and the diagnostics needed to continue: the alternation
-    flags, and whether every column's vertical solve converged.
+    advected state and the vertical diagnostics -- where the failure modes are,
+    since a column that exhausts its sub-steps reports an infinite residual.
+
+    The sweep-order flags are **not** returned. They are host-side control
+    state, and putting them in a jitted function's output turns them into
+    traced arrays, which is exactly what stops them being usable as flags on
+    the next call. Advance them alongside instead::
+
+        step = jax.jit(functools.partial(
+            advect_step, mesh=mesh, cfg=cfg, astep_seconds=astep,
+            sync_seconds=sync, xyfirst=xyfirst))
+        state, diagnostics = step(state, met)
+        xyfirst = advance_xyfirst(xyfirst, astep, sync)
 
     Horizontal runs first, as in ``sciproc.F``. The order is not arbitrary --
     the vertical flux is diagnosed from the gap between the transported density
@@ -111,7 +110,4 @@ def advect_step(
         ppm=cfg.ppm,
     )
 
-    return jnp.moveaxis(advected, 0, LAYER_AXIS), AdvectionDiagnostics(
-        xyfirst=advance_xyfirst(xyfirst, astep_seconds, sync_seconds),
-        vertical=vertical,
-    )
+    return jnp.moveaxis(advected, 0, LAYER_AXIS), vertical

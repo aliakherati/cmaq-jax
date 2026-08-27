@@ -447,6 +447,24 @@ def zadv(
     sub-step, since it divides by the transported density that has just changed.
     """
     con = jnp.asarray(con)
+
+    # The mesh coefficients are pure geometry and a caller will usually have
+    # built them in float64 without thinking about it. Left alone they promote
+    # the whole column solve, and the sub-step loop then fails outright: its
+    # carry goes in float32 and comes out float64. Casting here means the
+    # working precision is the state's, whatever the mesh was built from.
+    def as_state_dtype(value: Array) -> Array:
+        return jnp.asarray(value, dtype=con.dtype)
+
+    mesh = NonUniformMesh(
+        chi=as_state_dtype(mesh.chi),
+        psi=as_state_dtype(mesh.psi),
+        lam=as_state_dtype(mesh.lam),
+        mu=as_state_dtype(mesh.mu),
+        nu=as_state_dtype(mesh.nu),
+        edge_lo=(as_state_dtype(mesh.edge_lo[0]), as_state_dtype(mesh.edge_lo[1])),
+        edge_hi=(as_state_dtype(mesh.edge_hi[0]), as_state_dtype(mesh.edge_hi[1])),
+    )
     flx = diagnose_flux(rhoj_met, con[..., -1], ds, dt)
 
     batch = con.shape[1:-1]

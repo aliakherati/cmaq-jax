@@ -122,6 +122,15 @@ pretty = true
 module = "tests.*"
 disallow_untyped_defs = false
 
+# bench is a command-line entry point, not library code: it hands numpy arrays
+# straight to the operators and calls jax.block_until_ready, which is
+# unannotated upstream. Strict typing there buys nothing.
+[[tool.mypy.overrides]]
+module = "cmaq_jax.bench"
+disallow_untyped_defs = false
+disallow_untyped_calls = false
+disallow_incomplete_defs = false
+
 [tool.pytest.ini_options]
 minversion = "8.0"
 testpaths = ["tests"]

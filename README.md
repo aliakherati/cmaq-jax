@@ -64,9 +64,10 @@ Requires Python ≥ 3.11. Regenerating Fortran goldens additionally needs
 | `cmaq_jax.velocity` | face velocity: C-staggered pass-through, legacy density-weighted fallback | A1.3 | alpha |
 | `cmaq_jax.hadv` | axis-generic sweep, layer grouping, X-Y/Y-X alternation | A1.4–A1.5 | alpha |
 | `cmaq_jax.vadv` | column solve, flux-matching velocity adjustment, flux diagnosis, CFL sub-stepping | A2.1–A2.4 | alpha |
-| `cmaq_jax.advstep` | CFL analysis → sync step + per-layer `ASTEP` | A3.1 | not started |
+| `cmaq_jax.advstep` | CFL and divergence limits → sync step + per-layer `ASTEP` | A3.1 | alpha |
 | `cmaq_jax.api` | `advect_step` — HADV then ZADV, jittable and differentiable | A3.2 | alpha |
 | `cmaq_jax.io_mcip` | MCIP/IOAPI meteorology reader | A3.5 | blocked on met data |
+| `cmaq_jax.bench` | CPU/GPU timing at benchmark resolution | A3.6 | alpha |
 
 Tracked in [`docs/plans/PLAN-advection.md`](docs/plans/PLAN-advection.md) as
 chunks `A0.1` … `A3.7`.
