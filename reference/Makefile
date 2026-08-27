@@ -69,7 +69,7 @@ COMMON_OBJ := $(BUILD)/stubs.o $(BUILD)/stubs_driver.o $(STENEX_OBJ)
 
 HARNESSES := $(BUILD)/harness_hppm $(BUILD)/harness_vppm $(BUILD)/harness_ppm_coeffs \
              $(BUILD)/harness_zfdbc $(BUILD)/harness_hadv $(BUILD)/harness_zadv \
-             $(BUILD)/harness_hcdiff3d
+             $(BUILD)/harness_hcdiff3d $(BUILD)/harness_hdiff
 
 .PHONY: all clean
 all: $(HARNESSES)
@@ -146,6 +146,13 @@ $(BUILD)/hcdiff3d.o: $(BUILD)/deform.o
 
 $(BUILD)/harness_hcdiff3d: $(COMMON_OBJ) $(BUILD)/deform.o $(BUILD)/hcdiff3d.o \
                            $(BUILD)/harness_hcdiff3d.o
+	$(FC) $(FFLAGS) $^ -o $@
+
+# The driver pulls in rho_j.F as well; all four are vendored and unmodified.
+$(BUILD)/hdiff.o: $(BUILD)/hcdiff3d.o $(BUILD)/rho_j.o
+
+$(BUILD)/harness_hdiff: $(COMMON_OBJ) $(BUILD)/deform.o $(BUILD)/hcdiff3d.o \
+                        $(BUILD)/rho_j.o $(BUILD)/hdiff.o $(BUILD)/harness_hdiff.o
 	$(FC) $(FFLAGS) $^ -o $@
 
 clean:

@@ -257,6 +257,12 @@ module CGRID_SPCS
    integer, allocatable :: NR_TRNS_MAP(:)
    integer, allocatable :: TR_ADV_MAP(:)
 
+   !> Tracer diffusion map. hdiff.F builds DIFF_MAP from the same TRNS counts
+   !> advection uses, but takes tracers through N_TR_DIFF rather than
+   !> N_TR_ADV -- the two are separate namelist selections upstream.
+   integer :: N_TR_DIFF = 0
+   integer, allocatable :: TR_DIFF_MAP(:)
+
 contains
 
    !> Lay out `ntrns` transported species followed by the rho*J slot, so that
@@ -275,6 +281,7 @@ contains
       N_AE_TRNS = 0
       N_NR_TRNS = 0
       N_TR_ADV = 0
+      N_TR_DIFF = 0
 
       N_GC_SPC = ntrns
       N_GC_SPCD = ntrns + 1     ! gas block plus the rho*J slot
@@ -297,11 +304,14 @@ contains
       if (allocated(AE_TRNS_MAP)) deallocate (AE_TRNS_MAP)
       if (allocated(NR_TRNS_MAP)) deallocate (NR_TRNS_MAP)
       if (allocated(TR_ADV_MAP)) deallocate (TR_ADV_MAP)
+      if (allocated(TR_DIFF_MAP)) deallocate (TR_DIFF_MAP)
       allocate (GC_TRNS_MAP(ntrns), AE_TRNS_MAP(1), NR_TRNS_MAP(1), TR_ADV_MAP(1))
+      allocate (TR_DIFF_MAP(1))
       GC_TRNS_MAP = [(i, i=1, ntrns)]
       AE_TRNS_MAP = 0
       NR_TRNS_MAP = 0
       TR_ADV_MAP = 0
+      TR_DIFF_MAP = 0
    end subroutine set_species
 
 end module CGRID_SPCS

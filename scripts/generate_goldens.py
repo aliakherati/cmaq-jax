@@ -1097,6 +1097,7 @@ class HcdiffCase:
     densa_j: NDArray[np.float32]  # (ncols, nrows, nlays)
     densa_j_bnd: NDArray[np.float32]  # (nbndy, nlays), nbndy = 2*(ncols+nrows+2)
     msfd2: NDArray[np.float32]  # (ncols+1, nrows+1)
+    dx: float = 12000.0
     jdate: int = 2018182
     jtime: int = 120000
     note: str = ""
@@ -1221,6 +1222,7 @@ def run_hcdiff(case: HcdiffCase, workdir: Path) -> dict[str, NDArray[np.float32]
     payload = (
         struct.pack("<3i", ncols, nrows, nlays)
         + struct.pack("<2i", case.jdate, case.jtime)
+        + struct.pack("<2d", case.dx, case.dx)
         + case.uhat_jd.astype(F32).tobytes(**_f())
         + case.vhat_jd.astype(F32).tobytes(**_f())
         + case.densa_j.astype(F32).tobytes(**_f())
@@ -1262,6 +1264,140 @@ def zadv_golden(case: ZadvCase, workdir: Path) -> dict[str, NDArray[np.generic]]
         "cgrid_in": case.cgrid,
         "tstep": np.array(case.tstep, dtype=np.int32),
         **run_zadv(case, workdir),
+    }
+
+
+@dataclass(frozen=True)
+class HdiffCase:
+    """One call to HDIFF, CMAQ's horizontal-diffusion driver.
+
+    ``cgrid`` is in coupled units with rho*J in the last slot, matching the
+    advection cases -- but note that diffusion does **not** transport that slot,
+    so it must come back unchanged. ``dx`` matters more here than anywhere else:
+    the sub-step count is ``CFC*dx^2/max(K) `` against the sync step, and on a
+    12 km grid the stable step is ~2e5 s, so nothing ever subdivides. Reaching
+    the sub-stepping path at all requires a finer grid.
+    """
+
+    name: str
+    uhat_jd: NDArray[np.float32]
+    vhat_jd: NDArray[np.float32]
+    densa_j: NDArray[np.float32]
+    densa_j_bnd: NDArray[np.float32]
+    msfd2: NDArray[np.float32]
+    cgrid: NDArray[np.float32]
+    dx: float = 12000.0
+    sync_seconds: int = 180
+    jdate: int = 2018182
+    jtime: int = 120000
+    note: str = ""
+
+
+def _hhmmss(seconds: int) -> int:
+    hours, rest = divmod(seconds, 3600)
+    minutes, secs = divmod(rest, 60)
+    return hours * 10000 + minutes * 100 + secs
+
+
+def hdiff_cases() -> list[HdiffCase]:
+    """Driver cases, chosen mainly for how many sub-steps they force.
+
+    The two behaviours worth pinning are both sub-step-dependent: the frozen
+    halo only drifts after the first pass, and a run that agrees over 147
+    sub-steps is real evidence the halo is not being refreshed.
+    """
+    ncols, nrows, nlays, ntrns = 7, 6, 3, 2
+    nbndy = 2 * (ncols + nrows + 2)
+    shape = (ncols + 1, nrows + 1, nlays)
+    rows = np.arange(nrows + 1, dtype=np.float64)[None, :, None]
+    cols = np.arange(ncols + 1, dtype=np.float64)[:, None, None]
+
+    def build(name: str, *, dx: float, sync_seconds: int, note: str) -> HdiffCase:
+        rng = np.random.default_rng(20260827)
+        rho = 1.5 + 0.4 * rng.random((ncols, nrows, nlays))
+        mean_rho = float(rho.mean())
+        u = 40.0 * rows + 15.0 * cols + rng.normal(0.0, 3.0, shape)
+        v = 25.0 * cols + rng.normal(0.0, 3.0, shape)
+        q = 1.0 + rng.random((ncols, nrows, nlays, ntrns))
+        q[2, 2, 1, 0] += 8.0  # a spike, so there is a gradient worth diffusing
+        return HdiffCase(
+            name=name,
+            uhat_jd=(u * mean_rho).astype(F32),
+            vhat_jd=(v * mean_rho).astype(F32),
+            densa_j=rho.astype(F32),
+            densa_j_bnd=np.full((nbndy, nlays), mean_rho, dtype=F32),
+            msfd2=np.ones((ncols + 1, nrows + 1), dtype=F32),
+            cgrid=np.concatenate([q * rho[..., None], rho[..., None]], axis=-1).astype(F32),
+            dx=dx,
+            sync_seconds=sync_seconds,
+            note=note,
+        )
+
+    return [
+        build(
+            "single_step",
+            dx=12000.0,
+            sync_seconds=180,
+            note="the benchmark grid, where the stable step is ~2e5 s and NSTEPS "
+            "is 1. The frozen halo is exact here, so this isolates the update "
+            "itself from the sub-stepping.",
+        ),
+        build(
+            "two_steps",
+            dx=4000.0,
+            sync_seconds=3600,
+            note="NSTEPS = 2: the first case where the halo drift exists at all.",
+        ),
+        build(
+            "many_steps",
+            dx=1000.0,
+            sync_seconds=3600,
+            note="NSTEPS = 63. Enough passes that a halo refreshed each sub-step "
+            "would diverge visibly from one held fixed.",
+        ),
+        build(
+            "deep_substepping",
+            dx=500.0,
+            sync_seconds=3600,
+            note="NSTEPS = 147, the sub-stepping path under real stress.",
+        ),
+    ]
+
+
+def run_hdiff(case: HdiffCase, workdir: Path) -> dict[str, NDArray[np.generic]]:
+    ncols, nrows, nlays, nspc = case.cgrid.shape
+    payload = (
+        struct.pack("<4i", ncols, nrows, nlays, nspc - 1)
+        + struct.pack("<2i", case.jdate, case.jtime)
+        + struct.pack("<3i", 10000, _hhmmss(case.sync_seconds), 0)
+        + struct.pack("<2d", case.dx, case.dx)
+        + case.uhat_jd.astype(F32).tobytes(**_f())
+        + case.vhat_jd.astype(F32).tobytes(**_f())
+        + case.densa_j.astype(F32).tobytes(**_f())
+        + case.densa_j_bnd.astype(F32).tobytes(**_f())
+        + case.msfd2.astype(F32).tobytes(**_f())
+        + case.cgrid.astype(F32).tobytes(**_f())
+    )
+    raw = _run(BUILD / "harness_hdiff", payload, workdir)
+
+    expected = case.cgrid.size * 4 + 4
+    if len(raw) != expected:
+        raise RuntimeError(f"{case.name}: got {len(raw)} output bytes, expected {expected}")
+    out = np.frombuffer(raw[:-4], dtype=F32).reshape(case.cgrid.shape, order="F").copy()
+    return {"cgrid_out": out, "nsteps": np.int32(struct.unpack("<i", raw[-4:])[0])}
+
+
+def hdiff_golden(case: HdiffCase, workdir: Path) -> dict[str, NDArray[np.generic]]:
+    return {
+        "uhat_jd": case.uhat_jd,
+        "vhat_jd": case.vhat_jd,
+        "densa_j": case.densa_j,
+        "densa_j_bnd": case.densa_j_bnd,
+        "msfd2": case.msfd2,
+        "cgrid_in": case.cgrid,
+        "dx": np.float64(case.dx),
+        "sync_seconds": np.int32(case.sync_seconds),
+        **run_hdiff(case, workdir),
     }
 
 
@@ -1366,6 +1502,8 @@ def generate(check: bool) -> Result:
             work.append((f"zadv_{zcase2.name}", zadv_golden(zcase2, workdir)))
         for dcase in hcdiff_cases():
             work.append((f"hcdiff_{dcase.name}", hcdiff_golden(dcase, workdir)))
+        for hdcase in hdiff_cases():
+            work.append((f"hdiff_{hdcase.name}", hdiff_golden(hdcase, workdir)))
 
     for name, arrays in work:
         path = GOLDENS / f"{name}.npz"

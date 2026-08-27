@@ -31,6 +31,7 @@ easy to conflate:
 
 from __future__ import annotations
 
+import jax
 import jax.numpy as jnp
 from jax import Array
 
@@ -43,6 +44,7 @@ __all__ = [
     "eddy_diffusivity",
     "face_coefficients",
     "halo_density",
+    "hdiff_step",
     "stable_timestep",
     "substep_count",
 ]
@@ -303,3 +305,110 @@ def diffusion_coefficients(
     k11, k22 = face_coefficients(eddyh)
     dt = stable_timestep(k11, k22, dx1=cfg.dx1, dx2=cfg.dx2, constants=constants)
     return k11, k22, dt
+
+
+def _face_densities(densj: Array) -> tuple[Array, Array]:
+    """``0.5*(rhoJ(c) + rhoJ(c-1))`` on x faces, and the row analogue on y.
+
+    Ports ``hdiff.F:317-324``. ``densj`` is the haloed density from
+    :func:`halo_density`; both results are ``(ncols+1, nrows+1, nlays)``,
+    matching ``RK11``/``RK22`` before they are multiplied by the diffusivities.
+    """
+    ncols_p2, nrows_p2, _ = densj.shape
+    ncols, nrows = ncols_p2 - 2, nrows_p2 - 2
+    rk11 = 0.5 * (densj[1 : ncols + 2, 1 : nrows + 2] + densj[0 : ncols + 1, 1 : nrows + 2])
+    rk22 = 0.5 * (densj[1 : ncols + 2, 1 : nrows + 2] + densj[1 : ncols + 2, 0 : nrows + 1])
+    return rk11, rk22
+
+
+def _seed_halo(q: Array) -> Array:
+    """Extend the mixing ratio by one cell, copying the edge value outward.
+
+    Ports ``hdiff.F:355-400``. Each halo cell takes its neighbouring edge
+    cell's value, so the gradient across the domain boundary is zero and no
+    flux crosses it — the Dirichlet/no-flux condition named at ``hdiff.F:25``.
+
+    ``q`` is ``(ncols, nrows, nlays, nspc)``; the result is
+    ``(ncols+2, nrows+2, nlays, nspc)``.
+
+    Corners are never read: the five-point stencil only ever reaches a halo
+    cell directly north, south, east or west of an interior cell. They are
+    filled anyway, from the adjacent edge, rather than left undefined.
+    """
+    padded = jnp.pad(q, ((1, 1), (1, 1), (0, 0), (0, 0)), mode="edge")
+    return padded
+
+
+def hdiff_step(
+    state: Array,
+    densj: Array,
+    k11: Array,
+    k22: Array,
+    *,
+    cfg: GridConfig,
+    sync_seconds: float,
+    nsteps: int,
+) -> Array:
+    """One sync step of horizontal diffusion. Ports ``hdiff.F:455-530``.
+
+    ``state`` is ``(ncols, nrows, nlays, nspc)`` in coupled units, with rho*J in
+    the last slot; ``densj`` is the haloed density from :func:`halo_density`;
+    ``k11``/``k22`` are the face diffusivities from :func:`face_coefficients`.
+    ``nsteps`` is the sub-step count from :func:`substep_count` — host-side, so
+    the loop has a static trip count, exactly as ``astep_seconds`` is for
+    advection.
+
+    **The rho*J slot is not diffused.** ``DIFF_MAP`` (``hdiff.F:276-292``) covers
+    the transported species only, with no ``+ 1`` for density — unlike
+    ``ADV_MAP``, which does include it. Density is a coefficient here, not a
+    tracer, and diffusing it would smooth the meteorology.
+
+    **The halo is frozen across sub-steps**, reproducing ``hdiff.F``: the halo
+    arrays are filled once, before the ``DO 344`` loop, from the *initial*
+    mixing ratio, while the interior is reloaded from ``CGRID`` every sub-step.
+    The zero-gradient boundary is therefore exact only on the first sub-step and
+    drifts slightly afterwards. That is a behavioural detail a tidier rewrite
+    would silently change, so it is kept and pinned by a test.
+    """
+    state = jnp.asarray(state, dtype=cfg.numpy_dtype)
+    densj = jnp.asarray(densj, dtype=cfg.numpy_dtype)
+    k11 = jnp.asarray(k11, dtype=cfg.numpy_dtype)
+    k22 = jnp.asarray(k22, dtype=cfg.numpy_dtype)
+    if nsteps < 1:
+        raise ValueError(f"nsteps must be >= 1, got {nsteps}")
+
+    ncols, nrows = state.shape[0], state.shape[1]
+    rhoj = densj[1 : ncols + 1, 1 : nrows + 1]  # interior, (ncols, nrows, nlays)
+
+    rk11, rk22 = _face_densities(densj)
+    rk11 = (rk11 * k11)[..., None]  # (ncols+1, nrows+1, nlays, 1)
+    rk22 = (rk22 * k22)[..., None]
+
+    dt = sync_seconds / nsteps
+    dtdx1s = dt / (cfg.dx1 * cfg.dx1)
+    dtdx2s = dt / (cfg.dx2 * cfg.dx2)
+
+    species, density = state[..., :-1], state[..., -1:]
+    rhoj_s = rhoj[..., None]
+
+    # Filled once, from the initial mixing ratio, and held fixed -- see above.
+    halo = _seed_halo(species / rhoj_s)
+
+    def substep(_: int, current: Array) -> Array:
+        q = current / rhoj_s
+        # Interior refreshed each pass; the halo ring stays as first seeded.
+        padded = halo.at[1 : ncols + 1, 1 : nrows + 1].set(q)
+
+        east = padded[2 : ncols + 2, 1 : nrows + 1] - q
+        west = q - padded[0:ncols, 1 : nrows + 1]
+        north = padded[1 : ncols + 1, 2 : nrows + 2] - q
+        south = q - padded[1 : ncols + 1, 0:nrows]
+
+        return (
+            current
+            + dtdx1s * (rk11[1 : ncols + 1, 0:nrows] * east - rk11[0:ncols, 0:nrows] * west)
+            + dtdx2s * (rk22[0:ncols, 1 : nrows + 1] * north - rk22[0:ncols, 0:nrows] * south)
+        )
+
+    diffused = jax.lax.fori_loop(0, nsteps, substep, species)
+    return jnp.concatenate([diffused, density], axis=-1)

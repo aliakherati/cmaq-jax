@@ -26,6 +26,7 @@
 !>
 !>   input:  ncols, nrows, nlays                 (3 x int32)
 !>           jdate, jtime                        (2 x int32)
+!>           dx1, dx2                            (2 x float64) cell size, m
 !>           uhat_jd(ncols+1, nrows+1, nlays)    float32   contravariant u * rhoJ
 !>           vhat_jd(ncols+1, nrows+1, nlays)    float32   contravariant v * rhoJ
 !>           densa_j(ncols, nrows, nlays)        float32   rho * J
@@ -39,6 +40,7 @@
 program harness_hcdiff3d
 
    use HGRD_DEFN_STUB, only: set_hgrid
+   use GRID_CONF, only: set_cell_size
    use VGRD_DEFN, only: set_vgrid
    use CENTRALIZED_IO_MODULE, only: cio_init, cio_put, cio_put_msfd2, cio_put_bndy
    use UTILIO_DEFN, only: set_file_vars
@@ -65,6 +67,7 @@ program harness_hcdiff3d
    integer :: nbndy
    real, allocatable :: k11bar(:, :, :), k22bar(:, :, :), deform3d(:, :, :)
    real :: dt
+   real(8) :: dx1, dx2
    integer :: l
 
    if (command_argument_count() /= 2) then
@@ -83,8 +86,10 @@ program harness_hcdiff3d
 
    read (unit_in) ncols, nrows, nlays
    read (unit_in) jdate, jtime
+   read (unit_in) dx1, dx2
 
    call set_hgrid(ncols, nrows)
+   call set_cell_size(dx1, dx2)
    ! hcdiff3d.F needs NLAYS but no actual vertical structure; a uniform column
    ! is enough, and nothing here reads the face values.
    allocate (faces(nlays + 1))

@@ -42,6 +42,17 @@ module HGRD_DEFN_STUB
 
 contains
 
+   !> Override the cell size. 12 km by default, matching the benchmark domain,
+   !> but the diffusion sub-step is CFC*dx1*dx2/max(K) and the diffusivity
+   !> saturates at KHA = (DXB^2/(dx1*dx2))*KH -- so on a 12 km grid the stable
+   !> step is ~2e5 s and no sync step ever subdivides. A finer grid is the only
+   !> way to reach the sub-stepping path at all.
+   subroutine set_cell_size(dx, dy)
+      real(8), intent(in) :: dx, dy
+      XCELL_GD = dx
+      YCELL_GD = dy
+   end subroutine set_cell_size
+
    subroutine set_hgrid(ncols_in, nrows_in)
       integer, intent(in) :: ncols_in, nrows_in
       NCOLS = ncols_in
