@@ -27,11 +27,29 @@ both slower and a different computation to read.
 
 from __future__ import annotations
 
+from typing import NamedTuple
+
 import jax
 import jax.numpy as jnp
 from jax import Array
 
-__all__ = ["solve_acm1", "solve_tridiagonal"]
+from cmaq_jax.config import DEFAULT_ACM2, ACM2Constants
+
+#: Gravitational acceleration, m/s^2. ``CONST.EXT:69``.
+GRAV = 9.80622
+
+#: Dry-air gas constant, J/(kg K). ``CONST.EXT:116``.
+RDGAS = 287.07548994
+
+#: Water-vapour gas constant, J/(kg K). ``CONST.EXT``.
+RWVAP = 461.52492604
+
+__all__ = [
+    "VerticalMeteorology",
+    "eddy_diffusivity",
+    "solve_acm1",
+    "solve_tridiagonal",
+]
 
 
 def solve_tridiagonal(sub: Array, diag: Array, sup: Array, rhs: Array) -> Array:
@@ -138,3 +156,147 @@ def solve_acm1(col: Array, diag: Array, sup: Array, rhs: Array, kl: Array | int)
 
     solution = jnp.concatenate([x0[:, None], back[::-1].T], axis=1)
     return jnp.where(layer < kl, solution, 0.0)
+
+
+def _wind_shear_squared(uwind: Array, vwind: Array, c_staggered: bool) -> Array:
+    """Component-wise squared wind difference across each layer interface.
+
+    Ports ``eddyx.F:138-152``. ``uwind``/``vwind`` are dot-dimensioned
+    ``(ncols+1, nrows+1, nlays)``. The two branches average a different number
+    of points: C-staggered winds need only the two faces bounding a cell
+    (factor 1/4), while B-staggered winds are at cell corners and take all four
+    (factor 1/16).
+    """
+    du = uwind[..., 1:] - uwind[..., :-1]
+    dv = vwind[..., 1:] - vwind[..., :-1]
+    if c_staggered:
+        u_sum = du[1:, :-1] + du[:-1, :-1]
+        v_sum = dv[:-1, 1:] + dv[:-1, :-1]
+        return 0.25 * (u_sum**2 + v_sum**2)
+    u_sum = du[:-1, :-1] + du[1:, :-1] + du[:-1, 1:] + du[1:, 1:]
+    v_sum = dv[:-1, :-1] + dv[1:, :-1] + dv[:-1, 1:] + dv[1:, 1:]
+    return (1.0 / 16.0) * (u_sum**2 + v_sum**2)
+
+
+class VerticalMeteorology(NamedTuple):
+    """The met fields ``eddyx.F`` reads, named as ``Met_Data`` names them.
+
+    Grouped rather than passed separately because there are twelve of them and
+    their order carries no meaning — the same reason
+    :class:`cmaq_jax.api.Meteorology` exists.
+
+    Surface fields are ``(ncols, nrows)``; layer fields ``(ncols, nrows, nlays)``;
+    the winds are dot-dimensioned ``(ncols+1, nrows+1, nlays)``.
+
+    ``moli`` is the *inverse* Monin–Obukhov length, so its sign selects the
+    stability regime — negative unstable, zero neutral, positive stable. Storing
+    the inverse avoids the singularity at neutral, where ``L`` itself is
+    infinite.
+    """
+
+    pbl: Array
+    ustar: Array
+    moli: Array
+    zf: Array
+    zh: Array
+    kzmin: Array
+    thetav: Array
+    ta: Array
+    qv: Array
+    qc: Array
+    uwind: Array
+    vwind: Array
+
+
+def eddy_diffusivity(
+    met: VerticalMeteorology,
+    *,
+    c_staggered: bool = True,
+    constants: ACM2Constants = DEFAULT_ACM2,
+) -> Array:
+    """Vertical eddy diffusivity ``Kz``, m^2/s. Ports ``eddyx.F:104-215``.
+
+    Returns ``(ncols, nrows, nlays)`` with the **top layer zero**: the
+    diffusivity lives on layer interfaces, of which there are ``nlays - 1``.
+
+    Three regimes, combined by taking the larger of two estimates below the PBL:
+
+    * **surface layer** (``z < PBL``) — Monin–Obukhov similarity,
+      ``Kz = κ·(u*/φ_h)·z·(1 − z/h)²``. In neutral conditions ``φ_h = 1`` and
+      this is exact in closed form, which is what the ``neutral`` golden checks.
+    * **free atmosphere** — a Richardson-number-damped mixing length, with
+      different formulae either side of ``Ri = 0``.
+    * **moist correction** — where cloud water exceeds ``0.01 g/kg``, ``Ri`` is
+      rescaled for latent heating (HIRPBL). Omitting it would pass every dry
+      case, so one golden is cloudy.
+
+    Every Fortran branch becomes a ``jnp.where``; the guards on ``sqrt`` and
+    division follow the same double-``where`` discipline as the advection
+    kernels, so gradients stay finite where the Fortran merely stays defined.
+    """
+    pbl, ustar, moli, zf, zh, kzmin, thetav, ta, qv, qc, uwind, vwind = met
+    pbl, ustar, moli, zf, zh, kzmin, thetav, ta, qv, qc, uwind, vwind = (
+        jnp.asarray(a) for a in (pbl, ustar, moli, zf, zh, kzmin, thetav, ta, qv, qc, uwind, vwind)
+    )
+
+    hpbl = jnp.maximum(pbl, 20.0)[..., None]
+    zfl = zf[..., :-1]
+    zol = zfl * moli[..., None]
+
+    # --- surface-layer similarity (eddyx.F:112-136) ------------------------
+    # Unstable: the stability function is frozen above 0.1*PBL, so the
+    # diffusivity does not keep growing through the mixed layer.
+    zsol = 0.1 * hpbl * moli[..., None]
+    unstable_arg = jnp.where(zfl < 0.1 * hpbl, zol, zsol)
+    # Guard the sqrt: 1 - GAMAH*z/L is positive whenever z/L < 0, which is the
+    # only branch that reaches it, but the *other* branch still traces through.
+    radicand = 1.0 - constants.gamah * unstable_arg
+    safe_radicand = jnp.where(radicand > 0.0, radicand, 1.0)
+    phih_unstable = 1.0 / jnp.sqrt(safe_radicand)
+
+    phih_stable = jnp.where(zol < 1.0, 1.0 + constants.betah * zol, constants.betah + zol)
+    phih = jnp.where(zol < 0.0, phih_unstable, phih_stable)
+
+    zfunc = 1.0 - zfl / hpbl
+    edyz = constants.karman * (ustar[..., None] / phih) * zfl * zfunc * zfunc
+    edyz = jnp.maximum(edyz, kzmin[..., :-1])
+    below_pbl = zfl < hpbl
+    edyz = jnp.where(below_pbl, edyz, 0.0)
+
+    # --- free atmosphere (eddyx.F:155-190) ---------------------------------
+    dzl = zh[..., 1:] - zh[..., :-1]
+    ww2 = _wind_shear_squared(uwind, vwind, c_staggered)
+    ws2 = ww2 / (dzl * dzl) + 1.0e-9
+
+    theta_lo, theta_hi = thetav[..., :-1], thetav[..., 1:]
+    rib = 2.0 * GRAV * (theta_hi - theta_lo) / (dzl * ws2 * (theta_hi + theta_lo))
+
+    # Moist correction, applied where either bounding layer holds cloud water.
+    qmean = 0.5 * (qv[..., :-1] + qv[..., 1:])
+    tmean = 0.5 * (ta[..., :-1] + ta[..., 1:])
+    xlv = (2.501 - 0.00237 * (tmean - 273.15)) * 1.0e6
+    alph = xlv * qmean / RDGAS / tmean
+    cpair = 1004.67 * (1.0 + 0.84 * qv[..., :-1])
+    chi = xlv * xlv * qmean / (cpair * RWVAP * tmean * tmean)
+    rib_moist = (1.0 + alph) * (
+        rib - GRAV * GRAV / (ws2 * tmean * cpair) * ((chi - alph) / (1.0 + chi))
+    )
+    cloudy = (qc[..., :-1] > constants.qc_threshold) | (qc[..., 1:] > constants.qc_threshold)
+    rib = jnp.where(cloudy, rib_moist, rib)
+
+    zk = constants.karman * zfl
+    sql = zk * constants.rlam / (constants.rlam + zk)
+    sql = sql * sql
+
+    fh_denominator = 1.0 + rib * (10.0 + rib * (50.0 + 5000.0 * rib * rib))
+    fh = 0.0012 + 1.0 / fh_denominator
+    stable_eddv = kzmin[..., :-1] + jnp.sqrt(ws2) * fh * sql
+    unstable_eddv = kzmin[..., :-1] + jnp.sqrt(ws2 * (1.0 - 25.0 * jnp.minimum(rib, 0.0))) * sql
+    eddv = jnp.where(rib >= 0.0, stable_eddv, unstable_eddv)
+
+    # Below the PBL the similarity estimate wins if it is larger.
+    eddv = jnp.where(below_pbl & (edyz > eddv), edyz, eddv)
+    eddv = jnp.minimum(eddv, constants.eddy_max)
+
+    # The top layer has no interface above it.
+    return jnp.concatenate([eddv, jnp.zeros_like(eddv[..., :1])], axis=-1)

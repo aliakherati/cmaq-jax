@@ -19,8 +19,10 @@ import numpy as np
 from numpy.typing import NDArray
 
 __all__ = [
+    "DEFAULT_ACM2",
     "DEFAULT_HDIFF",
     "DEFAULT_PPM",
+    "ACM2Constants",
     "GridConfig",
     "HDiffConstants",
     "PPMConstants",
@@ -183,6 +185,72 @@ class HDiffConstants:
 
 DEFAULT_HDIFF = HDiffConstants()
 """CMAQ v5.5 defaults for horizontal diffusion."""
+
+
+@dataclass(frozen=True)
+class ACM2Constants:
+    """Constants of the ACM2 vertical-diffusion scheme.
+
+    ``theta`` is the time-centring: 0 explicit, 1 implicit, 0.5 Crank-Nicolson.
+    CMAQ ships 0.5 (``vdiffacmx.F:94``) and it is carried rather than hard-coded
+    because the file is written to support all three.
+
+    The stability-function coefficients are declared in *lower case* upstream
+    (``ASX_DATA_MOD.F:216-219``), in a file that is otherwise uppercase -- easy
+    to miss when searching, and worth noting because their absence looks at
+    first like the file cannot compile.
+    """
+
+    theta: float = 0.5
+    """Time-centring weight. ``vdiffacmx.F:94``."""
+
+    substep_factor: float = 0.75
+    """Safety factor on the diffusion sub-step. ``vdiffacmx.F:461,507``.
+
+    An *accuracy* limit, not a stability one: Crank-Nicolson is unconditionally
+    stable. This is a real difference from ``HDiffConstants.cfc``, which sits
+    past the explicit scheme's stability boundary.
+    """
+
+    karman: float = 0.40
+    """Von Karman constant. ``ASX_DATA_MOD.F:219``."""
+
+    gamah: float = 16.0
+    """Dyer unstable stability-function coefficient. ``ASX_DATA_MOD.F:217``."""
+
+    betah: float = 5.0
+    """Dyer stable stability-function coefficient, as WRF 3.6 PX uses it.
+    ``ASX_DATA_MOD.F:216``."""
+
+    rlam: float = 80.0
+    """Asymptotic mixing length, m. ``eddyx.F:59``."""
+
+    ric: float = 0.25
+    """Critical Richardson number. ``eddyx.F:60``."""
+
+    qc_threshold: float = 0.01e-3
+    """Cloud water above which the moist correction applies, kg/kg.
+    ``eddyx.F:163``."""
+
+    eddy_max: float = 1000.0
+    """Cap on the eddy diffusivity, m^2/s. ``eddyx.F:192``."""
+
+    def __post_init__(self) -> None:
+        if not 0.0 <= self.theta <= 1.0:
+            raise ValueError(f"theta must lie in [0, 1], got {self.theta}")
+        if self.substep_factor <= 0.0:
+            raise ValueError(f"substep_factor must be positive, got {self.substep_factor}")
+        if self.eddy_max <= 0.0:
+            raise ValueError(f"eddy_max must be positive, got {self.eddy_max}")
+
+    @property
+    def theta_bar(self) -> float:
+        """``THBAR = 1 - THETA``, the explicit half. ``vdiffacmx.F:95``."""
+        return 1.0 - self.theta
+
+
+DEFAULT_ACM2 = ACM2Constants()
+"""CMAQ v5.5 defaults for vertical diffusion."""
 
 
 def sigma_layer_thickness(x3face: NDArray[np.float64]) -> NDArray[np.float64]:

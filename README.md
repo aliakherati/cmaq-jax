@@ -68,6 +68,7 @@ Requires Python ≥ 3.11. Regenerating Fortran goldens additionally needs
 | `cmaq_jax.api` | `advect_step` — HADV then ZADV, jittable and differentiable | A3.2 | alpha |
 | `cmaq_jax.io_mcip` | MCIP/IOAPI meteorology reader | A3.5 | ✅ tested on synthetic IOAPI; unverified against real MCIP output |
 | `cmaq_jax.hdiff` | Horizontal diffusion: deformation, eddy diffusivity, driver | B0–B2 | ✅ matches `deform.F`/`hcdiff3d.F`/`hdiff.F` |
+| `cmaq_jax.vdiff` | ACM2 vertical diffusion: solvers, eddy diffusivity | C0–C1 | ⏳ solvers + `Kz` match; driver in progress |
 | `cmaq_jax.bench` | CPU/GPU timing at benchmark resolution | A3.6 | alpha |
 
 Tracked in [`docs/plans/PLAN-advection.md`](docs/plans/PLAN-advection.md) as

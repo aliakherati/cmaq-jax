@@ -2,15 +2,16 @@
 
 Parent: [`../PLAN-vdiff.md`](../PLAN-vdiff.md) · Depends on C0
 
-**Gate: solvers passed.** Both match the Fortran in both precisions, worst 0.98
-float32 ULPs across 9 cases, and both satisfy `‖Ax−b‖` at float64 machine
-precision. `C1.3` (`eddy_diffusivity`) remains.
+**Gate: passed.** Both solvers match in both precisions (worst 0.98 float32
+ULPs across 9 cases) and satisfy `‖Ax−b‖` at float64 machine precision.
+`eddy_diffusivity` matches across 10 cases, worst 3.0 ULPs, and reproduces the
+neutral surface-layer relation `κ·u*·z·(1−z/h)²` in closed form.
 
 | Chunk | Deliverable | Success criterion | Verify |
 |---|---|---|---|
 | **C1.1** ✅ | `vdiff.py`: `solve_tridiagonal` (`tri.F`) | Matches goldens; residual `‖Ax−b‖` at machine precision | `pytest tests/regression -k tri` |
 | **C1.2** ✅ | `vdiff.py`: `solve_acm1` (`matrix1.F`) | Matches goldens; residual small on the first-column matrix | `pytest tests/regression -k matrix1` |
-| **C1.3** | `vdiff.py`: `eddy_diffusivity` (`eddyx.F`) | Reproduces neutral/stable/unstable limits; `≥ KZMIN`; zero above the PBL | `pytest tests/unit -k eddy` |
+| **C1.3** ✅ | `vdiff.py`: `eddy_diffusivity` (`eddyx.F`) | Reproduces neutral/stable/unstable limits; `≥ KZMIN`; zero above the PBL | `pytest tests/unit -k eddy` |
 
 ## Notes
 

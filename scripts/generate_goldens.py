@@ -1767,6 +1767,231 @@ def _check_one(
         result.drifted.append(f"{name} ({worst:.1f} float32 ULPs)")
 
 
+@dataclass(frozen=True)
+class EddyxCase:
+    """One call to EDDYX, the vertical eddy diffusivity.
+
+    Fields are named as ``Met_Data`` names them. ``moli`` is the *inverse*
+    Monin-Obukhov length, so its sign is what selects the stability regime:
+    negative unstable, zero neutral, positive stable.
+    """
+
+    name: str
+    pbl: NDArray[np.float32]  # (ncols, nrows)
+    ustar: NDArray[np.float32]
+    moli: NDArray[np.float32]
+    zf: NDArray[np.float32]  # (ncols, nrows, nlays)
+    zh: NDArray[np.float32]
+    kzmin: NDArray[np.float32]
+    thetav: NDArray[np.float32]
+    ta: NDArray[np.float32]
+    qv: NDArray[np.float32]
+    qc: NDArray[np.float32]
+    uwind: NDArray[np.float32]  # (ncols+1, nrows+1, nlays)
+    vwind: NDArray[np.float32]
+    cstaguv: bool = True
+    note: str = ""
+
+
+def eddyx_cases() -> list[EddyxCase]:
+    """Diffusivity cases, one per regime the parameterization switches between.
+
+    A single random field exercises all three branches at once and distinguishes
+    none of them, so each case here isolates one: surface-layer similarity below
+    the PBL, Richardson-number mixing above it, and the moist correction.
+    """
+    ncols, nrows, nlays = 4, 3, 12
+    rng = np.random.default_rng(20260828)
+    face = np.linspace(80.0, 2400.0, nlays)
+    middle = face - 40.0
+
+    def build(
+        name: str,
+        *,
+        moli: float,
+        pbl: float = 1000.0,
+        ustar: float = 0.3,
+        kzmin: float = 0.5,
+        shear: float = 0.0,
+        lapse: float = 0.0,
+        qc: float = 0.0,
+        cstaguv: bool = True,
+        jitter: bool = False,
+        note: str = "",
+    ) -> EddyxCase:
+        shape2 = (ncols, nrows)
+        shape3 = (ncols, nrows, nlays)
+        dot = (ncols + 1, nrows + 1, nlays)
+
+        def noise(shape: tuple[int, ...]) -> NDArray[np.float64]:
+            return rng.normal(0.0, 0.02, shape) if jitter else np.zeros(shape)
+
+        thetav = 300.0 + lapse * np.arange(nlays)
+        # Winds vary across the domain as well as with height. A spatially
+        # uniform profile makes the two wind-shear stencils algebraically
+        # identical -- 0.25*(2du)^2 == (1/16)*(4du)^2 -- so the b_staggered case
+        # would be bit-identical to the C-staggered one and test nothing.
+        across = (
+            np.linspace(0.0, 1.0, ncols + 1)[:, None, None]
+            + 0.5 * np.linspace(0.0, 1.0, nrows + 1)[None, :, None]
+        )
+        wind = shear * np.arange(nlays)[None, None, :] * (1.0 + across)
+        return EddyxCase(
+            name=name,
+            pbl=np.full(shape2, pbl, dtype=F32),
+            ustar=np.full(shape2, ustar, dtype=F32),
+            moli=np.full(shape2, moli, dtype=F32),
+            zf=(np.broadcast_to(face, shape3) * (1.0 + noise(shape3))).astype(F32),
+            zh=(np.broadcast_to(middle, shape3) * (1.0 + noise(shape3))).astype(F32),
+            kzmin=np.full(shape3, kzmin, dtype=F32),
+            thetav=(np.broadcast_to(thetav, shape3) + noise(shape3)).astype(F32),
+            ta=np.full(shape3, 290.0, dtype=F32),
+            qv=np.full(shape3, 0.005, dtype=F32),
+            qc=np.full(shape3, qc, dtype=F32),
+            uwind=(np.broadcast_to(wind, dot) + noise(dot)).astype(F32),
+            vwind=noise(dot).astype(F32),
+            cstaguv=cstaguv,
+            note=note,
+        )
+
+    return [
+        build(
+            "neutral",
+            moli=0.0,
+            note="1/L = 0, so PHIH = 1 and the surface term is exactly "
+            "KARMAN*USTAR*z*(1-z/h)^2 -- checkable in closed form.",
+        ),
+        build(
+            "unstable",
+            moli=-0.01,
+            note="convective: PHIH = 1/sqrt(1 - GAMAH*z/L), capped at 0.1*PBL.",
+        ),
+        build(
+            "stable",
+            moli=0.01,
+            note="PHIH = 1 + BETAH*z/L below z/L = 1, BETAH + z/L above -- the "
+            "branch at z/L = 1 that a mild case never reaches.",
+        ),
+        build(
+            "very_stable",
+            moli=0.05,
+            pbl=1500.0,
+            note="drives z/L past 1 in the PBL, taking the second stable branch.",
+        ),
+        build(
+            "sheared",
+            moli=0.0,
+            shear=1.5,
+            lapse=0.6,
+            note="wind shear and a stable lapse rate together, so the bulk "
+            "Richardson number is finite and the free-atmosphere term is live "
+            "rather than sitting on WS2's 1e-9 floor. Below the PBL the "
+            "similarity term still dominates, so most of the difference from "
+            "the neutral case shows up aloft.",
+        ),
+        build(
+            "unstable_richardson",
+            moli=0.0,
+            shear=1.5,
+            lapse=-0.4,
+            note="negative RIB, which takes the other branch of the mixing-length "
+            "formula -- sqrt(WS2*(1 - 25*RIB)) instead of the FH polynomial.",
+        ),
+        build(
+            "cloudy",
+            moli=0.0,
+            shear=1.5,
+            lapse=0.6,
+            qc=1.0e-3,
+            note="cloud water above the 0.01e-3 threshold, enabling the moist "
+            "correction from HIRPBL. Omitting it entirely would pass every case "
+            "above.",
+        ),
+        build(
+            "kzmin_floor",
+            moli=0.02,
+            kzmin=4.0,
+            note="a large KZMIN, so the floor binds instead of the similarity "
+            "term. Catches a max() written as a min().",
+        ),
+        build(
+            "b_staggered",
+            moli=0.0,
+            shear=1.5,
+            lapse=0.6,
+            cstaguv=False,
+            note="the pre-MCIPv3.5 wind stencil: a 1/16 four-corner average "
+            "rather than the 1/4 two-point one.",
+        ),
+        build(
+            "realistic",
+            moli=-0.005,
+            shear=1.2,
+            lapse=0.3,
+            qc=0.5e-3,
+            jitter=True,
+            note="everything varying at once, with no structure to exploit -- "
+            "the case that catches anything the analytic ones agree on for the "
+            "wrong reason.",
+        ),
+    ]
+
+
+def run_eddyx(case: EddyxCase, workdir: Path) -> dict[str, NDArray[np.generic]]:
+    ncols, nrows, nlays = case.zf.shape
+    payload = (
+        struct.pack("<3i", ncols, nrows, nlays)
+        + struct.pack("<i", 1 if case.cstaguv else 0)
+        + b"".join(
+            getattr(case, field).astype(F32).tobytes(**_f())
+            for field in (
+                "pbl",
+                "ustar",
+                "moli",
+                "zf",
+                "zh",
+                "kzmin",
+                "thetav",
+                "ta",
+                "qv",
+                "qc",
+                "uwind",
+                "vwind",
+            )
+        )
+    )
+    raw = _run(BUILD / "harness_eddyx", payload, workdir)
+    expected = ncols * nrows * nlays * 4
+    if len(raw) != expected:
+        raise RuntimeError(f"{case.name}: got {len(raw)} output bytes, expected {expected}")
+    return {"eddyv": np.frombuffer(raw, dtype=F32).reshape((ncols, nrows, nlays), order="F").copy()}
+
+
+def eddyx_golden(case: EddyxCase, workdir: Path) -> dict[str, NDArray[np.generic]]:
+    fields = {
+        name: getattr(case, name)
+        for name in (
+            "pbl",
+            "ustar",
+            "moli",
+            "zf",
+            "zh",
+            "kzmin",
+            "thetav",
+            "ta",
+            "qv",
+            "qc",
+            "uwind",
+            "vwind",
+        )
+    }
+    return {
+        **fields,
+        "cstaguv": np.bool_(case.cstaguv),
+        **run_eddyx(case, workdir),
+    }
+
+
 #: Every golden family: name prefix, the case list, and how to run one.
 #:
 #: A table rather than a run of loops because it is the thing that grows with
@@ -1783,6 +2008,7 @@ FAMILIES: list[tuple[str, Callable[[], list[Any]], Callable[[Any, Path], dict[st
     ("hdiff", hdiff_cases, hdiff_golden),
     ("tri", tri_cases, tri_golden),
     ("matrix1", matrix1_cases, matrix1_golden),
+    ("eddyx", eddyx_cases, eddyx_golden),
 ]
 
 

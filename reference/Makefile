@@ -70,7 +70,7 @@ COMMON_OBJ := $(BUILD)/stubs.o $(BUILD)/stubs_driver.o $(STENEX_OBJ)
 HARNESSES := $(BUILD)/harness_hppm $(BUILD)/harness_vppm $(BUILD)/harness_ppm_coeffs \
              $(BUILD)/harness_zfdbc $(BUILD)/harness_hadv $(BUILD)/harness_zadv \
              $(BUILD)/harness_hcdiff3d $(BUILD)/harness_hdiff \
-             $(BUILD)/harness_tri $(BUILD)/harness_matrix1
+             $(BUILD)/harness_tri $(BUILD)/harness_matrix1 $(BUILD)/harness_eddyx
 
 .PHONY: all clean
 all: $(HARNESSES)
@@ -164,6 +164,20 @@ $(BUILD)/harness_tri: $(COMMON_OBJ) $(BUILD)/tri.o $(BUILD)/harness_tri.o
 
 $(BUILD)/harness_matrix1: $(COMMON_OBJ) $(BUILD)/matrix1.o $(BUILD)/harness_matrix1.o
 	$(FC) $(FFLAGS) $^ -o $@
+
+# eddyx.F needs a Met_Data carrier. The real ASX_DATA_MOD is 1154 lines of
+# land-surface and I/O bookkeeping; stubs_asx.f90 supplies only the twelve
+# arrays and three parameters eddyx.F actually reads.
+$(BUILD)/stubs_asx.o: $(HARNESS)/stubs_asx.f90 $(COMMON_OBJ)
+	$(FC) $(FFLAGS) -c $< -o $@
+
+$(BUILD)/eddyx.o: $(BUILD)/stubs_asx.o
+
+$(BUILD)/harness_eddyx: $(COMMON_OBJ) $(BUILD)/stubs_asx.o $(BUILD)/eddyx.o \
+                        $(BUILD)/harness_eddyx.o
+	$(FC) $(FFLAGS) $^ -o $@
+
+$(BUILD)/harness_eddyx.o: $(BUILD)/stubs_asx.o
 
 clean:
 	rm -rf $(BUILD)
