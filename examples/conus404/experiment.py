@@ -19,6 +19,7 @@ from cmaq_jax.hadv import BoundaryConditions
 
 GRAVITY = 9.81  # m s-2; MCIP metvars2ctm.f90 uses the same value.
 CO_MOLAR_MASS = 28.01e-3  # kg mol-1
+DRY_AIR_MOLAR_MASS = 28.9647e-3  # kg mol-1
 SECONDS_PER_DAY = 86_400.0
 
 
@@ -189,6 +190,26 @@ def tracer_mass_kg(
     if field.ndim != 3 or field.shape[-1] != thickness.size:
         raise ValueError(f"tracer shape {field.shape} is incompatible with ds {thickness.shape}")
     return float(np.einsum("ijl,l->", field, thickness) * cell_area)
+
+
+def coupled_co_to_ppbv(
+    coupled_co: NDArray[np.floating], rhoj: NDArray[np.floating]
+) -> NDArray[np.float64]:
+    """Convert coupled CO mass to dry-air mole fraction in parts per billion.
+
+    Both inputs use CMAQ's coupled transport units, so their ratio is the CO
+    mass mixing ratio.  Converting that ratio with the dry-air and CO molar
+    masses avoids requiring pressure, temperature, or geometric layer depth.
+    """
+    co = np.asarray(coupled_co, dtype=np.float64)
+    dry_air = np.asarray(rhoj, dtype=np.float64)
+    if co.shape != dry_air.shape:
+        raise ValueError(
+            f"coupled CO and rhoj shapes must match, got {co.shape} and {dry_air.shape}"
+        )
+    if np.any(dry_air <= 0.0):
+        raise ValueError("rhoj must be positive")
+    return co / dry_air * (DRY_AIR_MOLAR_MASS / CO_MOLAR_MASS) * 1.0e9
 
 
 def negative_tracer_mass_kg(

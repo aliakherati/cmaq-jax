@@ -30,6 +30,7 @@ from experiment import (
     coarsen_cells,
     coarsen_u,
     coarsen_v,
+    coupled_co_to_ppbv,
     emission_tendency,
     grid_finn_co,
     horizontal_divergence,
@@ -152,6 +153,7 @@ def _write_outputs(
     diagnostics: list[dict[str, Any]],
     state: np.ndarray,
     column_frames: list[np.ndarray],
+    surface_ppbv_frames: list[np.ndarray],
     frame_times: list[datetime],
     u_frames: list[np.ndarray],
     v_frames: list[np.ndarray],
@@ -177,6 +179,7 @@ def _write_outputs(
         npz_path,
         column_mass_kg=column_mass.astype(np.float32),
         column_mass_frames_kg=np.asarray(column_frames, dtype=np.float32),
+        surface_co_frames_ppbv=np.asarray(surface_ppbv_frames, dtype=np.float32),
         frame_times=np.asarray([stamp.isoformat() for stamp in frame_times]),
         u_surface=np.asarray(u_frames, dtype=np.float32),
         v_surface=np.asarray(v_frames, dtype=np.float32),
@@ -287,6 +290,7 @@ def main() -> int:
         cumulative_boundary_loss = 0.0
         previous_mass = 0.0
         column_frames = [np.zeros((ncols, nrows), dtype=np.float32)]
+        surface_ppbv_frames = [np.zeros((ncols, nrows), dtype=np.float32)]
         frame_times = [met.times[0]]
         u_frames: list[np.ndarray] = []
         v_frames: list[np.ndarray] = []
@@ -385,6 +389,11 @@ def main() -> int:
                         * cfg.dx1
                         * cfg.dx2
                     )
+                    surface_ppbv_frames.append(
+                        coupled_co_to_ppbv(
+                            frame_state[..., 0, 0], frame_state[..., 0, -1]
+                        ).astype(np.float32)
+                    )
                     frame_times.append(
                         met.times[index] + timedelta(seconds=elapsed_in_interval)
                     )
@@ -429,6 +438,7 @@ def main() -> int:
             diagnostics,
             state,
             column_frames,
+            surface_ppbv_frames,
             frame_times,
             u_frames,
             v_frames,

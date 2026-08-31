@@ -80,18 +80,24 @@ def _read_diagnostics(path: Path) -> dict[str, np.ndarray]:
 
 def _plume_scale(frames: np.ndarray, cell_area_km2: float) -> tuple[np.ndarray, float, float]:
     areal = frames / cell_area_km2
-    positive = areal[areal > 0.0]
+    floor, ceiling = _positive_scale(areal)
+    return areal, floor, ceiling
+
+
+def _positive_scale(field: np.ndarray) -> tuple[float, float]:
+    positive = field[field > 0.0]
     if positive.size == 0:
         raise ValueError("transport output has no positive CO mass to visualize")
     ceiling = float(np.percentile(positive, 99.5))
     floor = max(float(np.percentile(positive, 1.0)), ceiling / 10_000.0)
-    return areal, floor, ceiling
+    return floor, ceiling
 
 
 def _animate(
     *,
     output: Path,
     frames: np.ndarray,
+    column_mass_frames: np.ndarray,
     times: list[datetime],
     u: np.ndarray,
     v: np.ndarray,
@@ -102,8 +108,27 @@ def _animate(
     boundaries: Path,
     interpolation: int,
     fps: int,
+    quantity: str,
 ) -> None:
-    areal, floor, ceiling = _plume_scale(frames, dx * dy / 1.0e6)
+    if quantity == "column":
+        display, floor, ceiling = _plume_scale(frames, dx * dy / 1.0e6)
+        title_prefix = "California fire CO enhancement"
+        colorbar_label = "vertically integrated CO enhancement (kg km⁻²)"
+        footer = (
+            "CONUS404 winds · CMAQ HADV + ZADV · inert tracer; "
+            "no chemistry, deposition, or plume rise"
+        )
+    elif quantity == "ground":
+        display = frames
+        floor, ceiling = _positive_scale(display)
+        title_prefix = "California fire CO — lowest model layer"
+        colorbar_label = "lowest-layer CO enhancement (ppbv)"
+        footer = (
+            "Lowest WRF layer · CONUS404 winds · inert tracer; "
+            "no chemistry, deposition, plume rise, or vertical mixing"
+        )
+    else:  # pragma: no cover - internal call contract
+        raise ValueError(f"unknown animation quantity {quantity!r}")
     positions = np.linspace(0.0, len(times) - 1, (len(times) - 1) * interpolation + 1)
     arrow_stride = max(1, min(lon.shape) // 18)
 
@@ -111,7 +136,7 @@ def _animate(
     mesh = ax.pcolormesh(
         lon,
         lat,
-        np.maximum(areal[0], floor),
+        np.maximum(display[0], floor),
         shading="nearest",
         cmap="inferno",
         norm=LogNorm(vmin=floor, vmax=ceiling),
@@ -129,15 +154,15 @@ def _animate(
     )
     _map_axes(ax, lon, lat, boundaries)
     colorbar = fig.colorbar(mesh, ax=ax, pad=0.02)
-    colorbar.set_label("vertically integrated CO enhancement (kg km⁻²)")
+    colorbar.set_label(colorbar_label)
     title = ax.set_title(
-        "California fire CO enhancement — 2018-07-26 00:00 UTC\n"
+        f"{title_prefix} — 2018-07-26 00:00 UTC\n"
         f"{dx / 1000:.0f} km grid · 0.0 metric tons in domain"
     )
     subtitle = fig.text(
         0.5,
         0.015,
-        "CONUS404 winds · CMAQ HADV + ZADV · inert tracer; no chemistry, deposition, or plume rise",
+        footer,
         ha="center",
         fontsize=8,
     )
@@ -147,7 +172,11 @@ def _animate(
         lower = min(int(np.floor(position)), len(times) - 1)
         upper = min(lower + 1, len(times) - 1)
         weight = position - lower
-        field = (1.0 - weight) * areal[lower] + weight * areal[upper]
+        field = (1.0 - weight) * display[lower] + weight * display[upper]
+        column_mass = (
+            (1.0 - weight) * column_mass_frames[lower]
+            + weight * column_mass_frames[upper]
+        )
         wind_u = (1.0 - weight) * u[lower] + weight * u[upper]
         wind_v = (1.0 - weight) * v[lower] + weight * v[upper]
         stamp = times[lower] + timedelta(
@@ -158,9 +187,9 @@ def _animate(
             wind_u[::arrow_stride, ::arrow_stride],
             wind_v[::arrow_stride, ::arrow_stride],
         )
-        metric_tons = field.sum() * dx * dy / 1.0e9
+        metric_tons = column_mass.sum() / 1000.0
         title.set_text(
-            f"California fire CO enhancement — {stamp:%Y-%m-%d %H:%M} UTC\n"
+            f"{title_prefix} — {stamp:%Y-%m-%d %H:%M} UTC\n"
             f"{dx / 1000:.0f} km grid · {metric_tons:.1f} metric tons in domain"
         )
         return mesh, quiver, title, subtitle
@@ -299,6 +328,11 @@ def main() -> int:
 
     with np.load(args.run) as run:
         frames = np.asarray(run["column_mass_frames_kg"], dtype=np.float64)
+        surface_ppbv = (
+            np.asarray(run["surface_co_frames_ppbv"], dtype=np.float64)
+            if "surface_co_frames_ppbv" in run.files
+            else None
+        )
         times = [datetime.fromisoformat(str(value)) for value in run["frame_times"]]
         u = np.asarray(run["u_surface"], dtype=np.float64)
         v = np.asarray(run["v_surface"], dtype=np.float64)
@@ -317,6 +351,7 @@ def main() -> int:
     _animate(
         output=gif,
         frames=frames,
+        column_mass_frames=frames,
         times=times,
         u=u,
         v=v,
@@ -327,7 +362,28 @@ def main() -> int:
         boundaries=args.boundaries,
         interpolation=args.interpolation,
         fps=args.fps,
+        quantity="column",
     )
+    ground_gif = None
+    if surface_ppbv is not None:
+        ground_gif = args.output_dir / f"{stem}_ground_level.gif"
+        print(f"rendering {ground_gif}")
+        _animate(
+            output=ground_gif,
+            frames=surface_ppbv,
+            column_mass_frames=frames,
+            times=times,
+            u=u,
+            v=v,
+            lon=longitude,
+            lat=latitude,
+            dx=dx,
+            dy=dy,
+            boundaries=args.boundaries,
+            interpolation=args.interpolation,
+            fps=args.fps,
+            quantity="ground",
+        )
     print(f"rendering {png}")
     _summary(
         output=png,
@@ -340,7 +396,12 @@ def main() -> int:
         boundaries=args.boundaries,
         diagnostics=diagnostics,
     )
-    print(f"wrote {gif} ({gif.stat().st_size / 1e6:.1f} MB) and {png}")
+    ground_note = (
+        f", {ground_gif} ({ground_gif.stat().st_size / 1e6:.1f} MB)"
+        if ground_gif is not None
+        else ""
+    )
+    print(f"wrote {gif} ({gif.stat().st_size / 1e6:.1f} MB){ground_note} and {png}")
     return 0
 
 

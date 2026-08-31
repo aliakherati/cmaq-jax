@@ -8,12 +8,14 @@ from pathlib import Path
 import numpy as np
 from examples.conus404.experiment import (
     CO_MOLAR_MASS,
+    DRY_AIR_MOLAR_MASS,
     GRAVITY,
     FinnCO,
     clean_boundary_conditions,
     coarsen_cells,
     coarsen_u,
     coarsen_v,
+    coupled_co_to_ppbv,
     emission_tendency,
     grid_finn_co,
     horizontal_divergence,
@@ -77,6 +79,14 @@ def test_emission_tendency_integrates_back_to_daily_mass() -> None:
     emitted = tendency[..., 0] * 86_400.0
     assert tracer_mass_kg(emitted, ds, 16.0e6) == daily.sum()
     np.testing.assert_array_equal(tendency[..., 1], 0.0)
+
+
+def test_coupled_co_converts_to_dry_air_ppbv() -> None:
+    rhoj = np.array([[8_000.0, 9_000.0]])
+    expected_ppbv = np.array([[1.0, 250.0]])
+    mass_mixing_ratio = expected_ppbv * 1.0e-9 * CO_MOLAR_MASS / DRY_AIR_MOLAR_MASS
+    coupled_co = mass_mixing_ratio * rhoj
+    np.testing.assert_allclose(coupled_co_to_ppbv(coupled_co, rhoj), expected_ppbv)
 
 
 def test_mass_positivity_and_vertical_centroid_diagnostics() -> None:
