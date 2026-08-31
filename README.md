@@ -40,6 +40,15 @@ removed in 2019.
 Out of scope: ISAM, DDM-3D, process analysis, plume-in-grid, two-way WRF-CMAQ,
 MPAS grids, nested grids. See [`docs/ULTRAPLAN.md`](docs/ULTRAPLAN.md).
 
+## Real-field California validation
+
+[`examples/conus404/`](examples/conus404/README.md) runs the complete HADV→ZADV
+pair over California with native 4 km, 50-layer CONUS404 meteorology and daily
+FINN fire CO.  It includes conservative 8 km comparison, positivity and mass
+diagnostics, `rhoJ` closure, vertical-centroid diagnostics, static summaries,
+and animated plume GIFs.  The older five-level NARR example remains a visual
+smoke test and is not used as physical validation.
+
 ## Install
 
 ```bash
