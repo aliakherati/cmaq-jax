@@ -118,6 +118,11 @@ small, regenerable GIF and PNG results under `figures/` are committed.
   [current FINN release and unit conventions](https://www2.acom.ucar.edu/facility/finn)
   are documented by NCAR; this reproducible unauthenticated archive is clearly
   kept as v1.5 rather than relabelled v2.5.
+- **Lowest-layer concentration:** every animation frame also stores the first
+  WRF layer's dry-air CO mole-fraction enhancement.  The coupled CO mass is
+  divided by transported `rhoJ` to recover kg CO per kg dry air, then converted
+  to ppbv with 28.9647 and 28.01 g mol⁻¹ for dry air and CO, respectively.  This
+  conversion does not require an assumed layer volume, pressure, or temperature.
 - **Boundaries:** zero CO enhancement at inflow; real CONUS404 `rhoJ` at each
   boundary cell and layer.  CMAQ's zero-flux-divergence rule handles outflow.
 - **Time stepping:** CMAQ's Courant and positive-divergence constraints choose
@@ -202,6 +207,9 @@ question for the available software stack: use CPU for this California test.
 - [`transport_20180726_00_24h_4km.gif`](figures/transport_20180726_00_24h_4km.gif)
   — 97 native-grid model frames at 15-minute intervals, with surface winds and
   live domain mass.
+- [`transport_20180726_00_24h_4km_ground_level.gif`](figures/transport_20180726_00_24h_4km_ground_level.gif)
+  — the same 97 times and winds, showing CO enhancement in the lowest WRF layer
+  in ppbv on a fixed logarithmic scale.
 - [`transport_20180726_00_4km.gif`](figures/transport_20180726_00_4km.gif) — the
   original six-hour native-grid result with hourly model frames.
 - [`transport_20180726_00_8km.gif`](figures/transport_20180726_00_8km.gif) — the
@@ -219,6 +227,13 @@ meteorology.  It does **not** validate PM2.5 concentrations or reproduce
 observed smoke.  A forecast comparison would need a current FINN inventory,
 plume-rise treatment, the omitted physics, background chemical boundary
 conditions, and observations.
+
+In particular, the lowest-layer GIF is not a monitor-equivalent surface CO
+prediction.  With emissions injected into that layer but no plume rise or
+planetary-boundary-layer mixing, its 26,445 ppbv maximum occurs in source cells
+and is unrealistically concentrated.  The animation is useful for diagnosing
+near-surface advection; absolute ground-level concentrations require vertical
+turbulent mixing first.
 
 FINNv1.5 is a daily inventory.  The July 26 source is applied at a constant rate
 from 00 UTC July 26 through 00 UTC July 27; the 15-minute animation therefore
