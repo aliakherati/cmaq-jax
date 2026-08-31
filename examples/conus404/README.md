@@ -127,6 +127,40 @@ known source.  It includes roundoff and is not an independently integrated
 face-flux diagnostic; `budget_residual_kg` is consequently an arithmetic
 closure check, not a second conservation measurement.
 
+## JAX Metal test
+
+An isolated Apple-GPU test was run on the same development laptop (Apple M4
+Pro, 48 GB unified memory, macOS 26.2) with `jax-metal==0.1.1` and
+`jax==jaxlib==0.5.0`.  The main CPU environment, which uses JAX/JAXLIB 0.11.1,
+was not changed.  Apple labels the
+[Metal plug-in experimental](https://developer.apple.com/metal/jax/) and does
+not support float64, so every transport field remained float32.
+
+The runner does not currently work on Metal unchanged: the one-time
+`nonuniform_mesh` construction aborts inside MPSGraph with an unresolved
+`ndArrayOffsetIdentity32` function.  For benchmarking only, its static
+coefficients were precomputed on CPU and transferred to Metal.  With that
+temporary workaround, HADV→ZADV completed at all three resolutions:
+
+| Six-hour grid | CPU | Metal | Metal versus CPU |
+|---|---:|---:|---:|
+| 36 km | 6.0 s | 8.8 s | 47% slower |
+| 8 km | 36.0 s | 36.0 s | no change |
+| 4 km | 295.0 s | 336.1 s | 14% slower |
+
+The final column fields remained close: normalized CPU/Metal L1 differences
+were `6.4e-8`, `1.28e-7`, and `1.29e-7` at 36, 8, and 4 km.  However, at 8 and
+4 km Metal reported a maximum vertical flux-adjustment residual of `1.0`, while
+CPU met CMAQ's `1e-3` tolerance.  This makes Metal unsuitable as a validated
+backend for this experiment even though the resulting plume is nearly the
+same.  It also gives no speed benefit for a two-slot state (`CO`, `rhoJ`).  A
+larger chemical mechanism, an ensemble, or batched sensitivities could offer
+more GPU parallelism, but that benefit has not been demonstrated here.
+
+These timings are not a perfectly controlled backend comparison because the
+Metal plug-in required an older JAX/JAXLIB version.  They answer the practical
+question for the available software stack: use CPU for this California test.
+
 ## Figures
 
 ![Native 4 km transport summary](figures/transport_20180726_00_4km_summary.png)
