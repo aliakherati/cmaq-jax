@@ -286,7 +286,12 @@ def main() -> int:
     parser.add_argument("--diagnostics", type=Path, required=True)
     parser.add_argument("--boundaries", type=Path, default=DEFAULT_BOUNDARIES)
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_FIGURES)
-    parser.add_argument("--interpolation", type=int, default=4, help="animation frames per hour")
+    parser.add_argument(
+        "--interpolation",
+        type=int,
+        default=4,
+        help="visual subframes between each pair of saved model frames",
+    )
     parser.add_argument("--fps", type=int, default=8)
     args = parser.parse_args()
     if args.interpolation < 1 or args.fps < 1:

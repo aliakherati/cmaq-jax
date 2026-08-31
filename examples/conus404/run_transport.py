@@ -14,7 +14,7 @@ import csv
 import sys
 import time
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from functools import partial
 from pathlib import Path
 from typing import Any
@@ -203,12 +203,20 @@ def main() -> int:
         default=DEFAULT_PPM.max_substeps,
         help="CMAQ default is 30; lowering is only for small development checks",
     )
+    parser.add_argument(
+        "--frame-minutes",
+        type=int,
+        default=60,
+        help="save model-resolved animation frames at this interval",
+    )
     parser.add_argument("--output", type=Path, default=None, help="output stem")
     args = parser.parse_args()
     if args.coarsen < 1:
         parser.error("--coarsen must be positive")
     if args.vertical_max_substeps < 1:
         parser.error("--vertical-max-substeps must be positive")
+    if args.frame_minutes < 1:
+        parser.error("--frame-minutes must be positive")
 
     met = MetSubset(args.met)
     try:
@@ -220,6 +228,12 @@ def main() -> int:
         ]
         if any(seconds <= 0 for seconds in intervals):
             raise ValueError("meteorology timestamps must increase")
+        frame_seconds = args.frame_minutes * 60
+        if any(seconds % frame_seconds for seconds in intervals):
+            raise ValueError(
+                f"the {args.frame_minutes}-minute frame interval must divide every "
+                f"meteorology interval, which is {intervals} seconds"
+            )
 
         ds = sigma_layer_thickness(met.sigma_face)
         latitude = coarsen_cells(met.latitude_native, args.coarsen, extensive=False)
@@ -305,7 +319,7 @@ def main() -> int:
             schedule = advstep(
                 wind,
                 hdiv,
-                interval,
+                frame_seconds,
                 DEFAULT_LIMITS,
                 sync_layers=sync_layers,
             )
@@ -363,6 +377,22 @@ def main() -> int:
                     interval_vertical_substeps,
                     int(np.max(np.asarray(jax.device_get(vertical.substeps)))),
                 )
+                elapsed_in_interval = (substep + 1) * schedule.sync_seconds
+                if elapsed_in_interval % frame_seconds == 0:
+                    frame_state = np.asarray(jax.device_get(current), dtype=np.float32)
+                    column_frames.append(
+                        np.einsum("ijl,l->ij", frame_state[..., 0], cfg.ds)
+                        * cfg.dx1
+                        * cfg.dx2
+                    )
+                    frame_times.append(
+                        met.times[index] + timedelta(seconds=elapsed_in_interval)
+                    )
+                    end_weight = elapsed_in_interval / interval
+                    frame_u = u0 + end_weight * (u1 - u0)
+                    frame_v = v0 + end_weight * (v1 - v0)
+                    u_frames.append(0.5 * (frame_u[:-1, :, 0] + frame_u[1:, :, 0]))
+                    v_frames.append(0.5 * (frame_v[:, :-1, 0] + frame_v[:, 1:, 0]))
 
             state = np.asarray(jax.device_get(current), dtype=np.float32)
             mass = tracer_mass_kg(state[..., 0], ds, cfg.dx1 * cfg.dx2)
@@ -383,12 +413,6 @@ def main() -> int:
                 max_vertical_substeps=interval_vertical_substeps,
             )
             diagnostics.append(row)
-            column_frames.append(
-                np.einsum("ijl,l->ij", state[..., 0], cfg.ds) * cfg.dx1 * cfg.dx2
-            )
-            frame_times.append(met.times[index + 1])
-            u_frames.append(0.5 * (u1[:-1, :, 0] + u1[1:, :, 0]))
-            v_frames.append(0.5 * (v1[:, :-1, 0] + v1[:, 1:, 0]))
             print(
                 f"{met.times[index + 1]:%Y-%m-%d %H:%M} UTC  mass={mass:.1f} kg  "
                 f"min={row['min_coupled_tracer']:.3e}  "
