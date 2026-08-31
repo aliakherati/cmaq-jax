@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# ruff: noqa: PLR0915
+# ruff: noqa: PLR0912, PLR0915
 """Subset hourly CONUS404 meteorology for a California transport run.
 
 The RDA THREDDS server is queried with OPeNDAP hyperslabs, so only the requested
@@ -15,6 +15,7 @@ Example (seven records for a six-hour run):
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -35,7 +36,22 @@ def _open(url: str) -> Any:
         raise ImportError(
             "CONUS404 download needs pydap; install with: uv pip install -e '.[io]'"
         ) from exc
-    return open_url(url, protocol="dap2")
+    return open_url(
+        url,
+        protocol="dap2",
+        timeout=90,
+        session_kwargs={
+            "retry_args": {
+                "total": 2,
+                "status": 2,
+                "connect": 1,
+                "read": 1,
+                "backoff_factor": 0.5,
+                "status_forcelist": [500, 502, 503, 504],
+                "allowed_methods": ["GET"],
+            }
+        },
+    )
 
 
 def _read(variable: Any, key: Any, *, drop_time: bool = False) -> NDArray[np.float32]:
@@ -88,6 +104,46 @@ def _global(dataset: Any, name: str) -> Any:
         raise ValueError(f"CONUS404 constants are missing global attribute {name}") from exc
 
 
+def _fetch_hour(
+    stamp: datetime, row_slice: slice, column_slice: slice
+) -> tuple[NDArray[np.float32], NDArray[np.float32], NDArray[np.float32]]:
+    """Fetch independent U, V, and MU hyperslabs concurrently."""
+
+    def fetch(kind: str, name: str, key: tuple[slice, ...]) -> NDArray[np.float32]:
+        return _read(_open(_hourly_url(kind, stamp))[name], key, drop_time=True)
+
+    with ThreadPoolExecutor(max_workers=3, thread_name_prefix="conus404") as executor:
+        u_future = executor.submit(
+            fetch,
+            "3d",
+            "U",
+            (
+                slice(0, 1),
+                slice(None),
+                row_slice,
+                slice(column_slice.start, column_slice.stop + 1),
+            ),
+        )
+        v_future = executor.submit(
+            fetch,
+            "3d",
+            "V",
+            (
+                slice(0, 1),
+                slice(None),
+                slice(row_slice.start, row_slice.stop + 1),
+                column_slice,
+            ),
+        )
+        mass_future = executor.submit(
+            fetch,
+            "2d",
+            "MU",
+            (slice(0, 1), row_slice, column_slice),
+        )
+        return u_future.result(), v_future.result(), mass_future.result()
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -101,6 +157,12 @@ def main() -> int:
     parser.add_argument("--east", type=float, default=DEFAULT_BBOX[1])
     parser.add_argument("--south", type=float, default=DEFAULT_BBOX[2])
     parser.add_argument("--north", type=float, default=DEFAULT_BBOX[3])
+    parser.add_argument(
+        "--template",
+        type=Path,
+        default=None,
+        help="reuse grid constants and initial heights from an existing subset",
+    )
     parser.add_argument("--output", type=Path, default=None)
     args = parser.parse_args()
 
@@ -126,22 +188,65 @@ def main() -> int:
     output.parent.mkdir(parents=True, exist_ok=True)
     temporary = output.with_suffix(output.suffix + ".part")
 
-    constants = _open(CONSTANTS_URL)
-    full_lat = np.asarray(constants["XLAT"][:]).astype(np.float64, copy=False)
-    full_lon = np.asarray(constants["XLONG"][:]).astype(np.float64, copy=False)
-    row_slice, column_slice = _window(full_lat, full_lon, bbox)
-    ny = row_slice.stop - row_slice.start
-    nx = column_slice.stop - column_slice.start
+    try:
+        from netCDF4 import Dataset  # noqa: PLC0415
+    except ImportError as exc:  # pragma: no cover - depends on installed extra
+        raise ImportError(
+            "writing the subset needs netCDF4; install with: uv pip install -e '.[io]'"
+        ) from exc
 
-    latitude = full_lat[row_slice, column_slice].astype(np.float32)
-    longitude = full_lon[row_slice, column_slice].astype(np.float32)
-    map_factor = _read(
-        constants["MAPFAC_M"], (slice(0, 1), row_slice, column_slice), drop_time=True
-    )
-    sigma_face = _read(constants["ZNW"], (slice(0, 1), slice(None)), drop_time=True)
-    dx = float(_global(constants, "DX"))
-    dy = float(_global(constants, "DY"))
-    hybrid_opt = int(_global(constants, "HYBRID_OPT"))
+    template_zface: NDArray[np.float32] | None = None
+    template_records: dict[int, int] = {}
+    if args.template is not None:
+        if not args.template.exists():
+            raise FileNotFoundError(f"template not found: {args.template}")
+        with Dataset(args.template) as template:
+            template_bbox = tuple(
+                float(getattr(template, name)) for name in ("west", "east", "south", "north")
+            )
+            if not np.allclose(template_bbox, bbox):
+                raise ValueError(
+                    f"template bbox {template_bbox} does not match requested bbox {bbox}"
+                )
+            template_start = datetime.fromtimestamp(int(template["time"][0]), tz=UTC)
+            if template_start != start:
+                raise ValueError(
+                    f"template starts at {template_start.isoformat()}, not {start.isoformat()}"
+                )
+            latitude = np.asarray(template["latitude"][:], dtype=np.float32)
+            longitude = np.asarray(template["longitude"][:], dtype=np.float32)
+            map_factor = np.asarray(template["map_factor"][:], dtype=np.float32)
+            sigma_face = np.asarray(template["sigma_face"][:], dtype=np.float32)
+            template_zface = np.asarray(template["zface"][:], dtype=np.float32)
+            template_records = {
+                int(stamp): index for index, stamp in enumerate(template["time"][:])
+            }
+            dx = float(template.dx)
+            dy = float(template.dy)
+            hybrid_opt = int(template.hybrid_opt)
+            row_slice = slice(int(template.j_start), int(template.j_start) + latitude.shape[0])
+            column_slice = slice(
+                int(template.i_start), int(template.i_start) + latitude.shape[1]
+            )
+        ny, nx = latitude.shape
+        print(f"reusing grid constants from {args.template}")
+    else:
+        constants = _open(CONSTANTS_URL)
+        full_lat = np.asarray(constants["XLAT"][:]).astype(np.float64, copy=False)
+        full_lon = np.asarray(constants["XLONG"][:]).astype(np.float64, copy=False)
+        row_slice, column_slice = _window(full_lat, full_lon, bbox)
+        ny = row_slice.stop - row_slice.start
+        nx = column_slice.stop - column_slice.start
+
+        latitude = full_lat[row_slice, column_slice].astype(np.float32)
+        longitude = full_lon[row_slice, column_slice].astype(np.float32)
+        map_factor = _read(
+            constants["MAPFAC_M"], (slice(0, 1), row_slice, column_slice), drop_time=True
+        )
+        sigma_face = _read(constants["ZNW"], (slice(0, 1), slice(None)), drop_time=True)
+        dx = float(_global(constants, "DX"))
+        dy = float(_global(constants, "DY"))
+        hybrid_opt = int(_global(constants, "HYBRID_OPT"))
     if sigma_face.shape != (51,):
         raise ValueError(f"expected all 51 CONUS404 sigma faces, got {sigma_face.shape}")
     if hybrid_opt != -1:
@@ -153,18 +258,14 @@ def main() -> int:
         f"native window x={column_slice.start}:{column_slice.stop}, "
         f"y={row_slice.start}:{row_slice.stop} -> {nx} x {ny} x 50"
     )
-    print(f"bbox requested {bbox}; grid-cell centres span lon {longitude.min():.2f}.."
-          f"{longitude.max():.2f}, lat {latitude.min():.2f}..{latitude.max():.2f}")
-
-    try:
-        from netCDF4 import Dataset  # noqa: PLC0415
-    except ImportError as exc:  # pragma: no cover - depends on installed extra
-        raise ImportError(
-            "writing the subset needs netCDF4; install with: uv pip install -e '.[io]'"
-        ) from exc
+    print(
+        f"bbox requested {bbox}; grid-cell centres span lon {longitude.min():.2f}.."
+        f"{longitude.max():.2f}, lat {latitude.min():.2f}..{latitude.max():.2f}"
+    )
 
     try:
         with Dataset(temporary, "w", format="NETCDF4") as target:
+            template_source = Dataset(args.template) if args.template is not None else None
             target.createDimension("time", args.hours + 1)
             target.createDimension("bottom_top", 50)
             target.createDimension("bottom_top_stag", 51)
@@ -226,43 +327,40 @@ def main() -> int:
                 **compression,
             )
             z_var.units = "m MSL"
+            if template_zface is not None:
+                z_var[:] = template_zface
 
             for index in range(args.hours + 1):
                 stamp = start + timedelta(hours=index)
-                print(f"[{index + 1}/{args.hours + 1}] {stamp:%Y-%m-%d %H:%M} UTC", flush=True)
-                fields3d = _open(_hourly_url("3d", stamp))
-                fields2d = _open(_hourly_url("2d", stamp))
-                u_var[index] = _read(
-                    fields3d["U"],
-                    (
-                        slice(0, 1),
-                        slice(None),
-                        row_slice,
-                        slice(column_slice.start, column_slice.stop + 1),
-                    ),
-                    drop_time=True,
+                epoch = int(stamp.timestamp())
+                template_index = template_records.get(epoch)
+                origin = " (template)" if template_index is not None else ""
+                print(
+                    f"[{index + 1}/{args.hours + 1}] {stamp:%Y-%m-%d %H:%M} UTC{origin}",
+                    flush=True,
                 )
-                v_var[index] = _read(
-                    fields3d["V"],
-                    (
-                        slice(0, 1),
-                        slice(None),
-                        slice(row_slice.start, row_slice.stop + 1),
-                        column_slice,
-                    ),
-                    drop_time=True,
-                )
-                mass_var[index] = _read(
-                    fields2d["MU"], (slice(0, 1), row_slice, column_slice), drop_time=True
-                )
-                if index == 0:
+                if template_index is not None and template_source is not None:
+                    u_var[index] = template_source["u"][template_index]
+                    v_var[index] = template_source["v"][template_index]
+                    mass_var[index] = template_source["dry_air_mass"][template_index]
+                else:
+                    u_hour, v_hour, mass_hour = _fetch_hour(
+                        stamp, row_slice, column_slice
+                    )
+                    u_var[index] = u_hour
+                    v_var[index] = v_hour
+                    mass_var[index] = mass_hour
+                if index == 0 and template_zface is None:
+                    fields3d = _open(_hourly_url("3d", stamp))
                     z_var[:] = _read(
                         fields3d["Z"],
                         (slice(0, 1), slice(None), row_slice, column_slice),
                         drop_time=True,
                     )
-                time_var[index] = int(stamp.timestamp())
+                time_var[index] = epoch
                 target.sync()
+            if template_source is not None:
+                template_source.close()
         temporary.replace(output)
     except BaseException:
         if temporary.exists():
