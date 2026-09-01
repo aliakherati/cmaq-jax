@@ -46,6 +46,8 @@ dev = [
     "mypy>=1.10",
     # Needed by scripts/make_<chunk>_figures.py — dev-time only, not used at runtime.
     "matplotlib>=3.8",
+    # Reprojects the NASA basemap and Natural Earth lines onto EPA's MCIP grid.
+    "pyproj>=3.6",
     # Needed by tests/regression/* — provides the float32 downcast and
     # tolerance-aware compare primitives. Installed from GitHub since
     # atmos-jax-common is not on PyPI yet.
