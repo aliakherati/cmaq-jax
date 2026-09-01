@@ -116,7 +116,7 @@ def _positive_scale(field: np.ndarray) -> tuple[float, float]:
     return floor, ceiling
 
 
-def _animate(
+def _animate(  # noqa: PLR0915
     *,
     output: Path,
     frames: np.ndarray,
@@ -134,6 +134,7 @@ def _animate(
     quantity: str,
     title_override: str | None = None,
     footer_override: str | None = None,
+    presentation: bool = False,
 ) -> None:
     if quantity == "column":
         display, floor, ceiling = _plume_scale(frames, dx * dy / 1.0e6)
@@ -161,13 +162,22 @@ def _animate(
     lon_edges = _cell_edges(lon)
     lat_edges = _cell_edges(lat)
 
-    fig, ax = plt.subplots(figsize=(8.2, 7.6))
+    figure_color = "#080d15" if presentation else "white"
+    map_color = "#101923" if presentation else "#202020"
+    cmap = matplotlib.colormaps["magma" if presentation else "inferno"].copy()
+    cmap.set_bad(map_color)
+    initial_field = (
+        np.ma.masked_less_equal(display[0], 0.0)
+        if presentation
+        else np.maximum(display[0], floor)
+    )
+    fig, ax = plt.subplots(figsize=(9.6, 7.0), facecolor=figure_color)
     mesh = ax.pcolormesh(
         lon_edges,
         lat_edges,
-        np.maximum(display[0], floor),
+        initial_field,
         shading="flat",
-        cmap="inferno",
+        cmap=cmap,
         norm=LogNorm(vmin=floor, vmax=ceiling),
     )
     quiver = ax.quiver(
@@ -175,26 +185,125 @@ def _animate(
         lat[::arrow_stride, ::arrow_stride],
         u[0, ::arrow_stride, ::arrow_stride],
         v[0, ::arrow_stride, ::arrow_stride],
-        color="#60d8ff",
-        alpha=0.7,
-        width=0.0024,
+        color="#7dddf5" if presentation else "#60d8ff",
+        alpha=0.78 if presentation else 0.7,
+        width=0.0022 if presentation else 0.0024,
         scale=380,
         zorder=6,
     )
     _map_axes(ax, lon, lat, boundaries)
+    ax.set_facecolor(map_color)
     colorbar = fig.colorbar(mesh, ax=ax, pad=0.02)
     colorbar.set_label(colorbar_label)
-    title = ax.set_title(
-        f"{title_prefix} — {times[0]:%Y-%m-%d %H:%M} UTC\n"
-        f"{dx / 1000:.0f} km grid · 0.0 metric tons in domain"
-    )
-    subtitle = fig.text(
-        0.5,
-        0.015,
-        footer,
-        ha="center",
-        fontsize=8,
-    )
+    if presentation:
+        for spine in colorbar.ax.spines.values():
+            spine.set_edgecolor("#718096")
+        colorbar.ax.tick_params(colors="#dce7f2", labelsize=9)
+        colorbar.set_label(colorbar_label, color="#dce7f2", labelpad=12)
+        ax.set_axis_off()
+        fig.text(
+            0.055,
+            0.952,
+            title_prefix,
+            color="#f4f8fb",
+            fontsize=19,
+            ha="left",
+            va="top",
+        )
+        fig.text(
+            0.055,
+            0.913,
+            "EPA 2016v3 2023gf emissions  •  12 km  •  35 layers  •  CMAQ/JAX",
+            color="#9fb2c5",
+            fontsize=9,
+            ha="left",
+            va="top",
+        )
+        time_text = ax.text(
+            0.018,
+            0.965,
+            f"MET  {times[0]:%d %b %Y  ·  %H:%M UTC}".upper(),
+            transform=ax.transAxes,
+            color="#f4f8fb",
+            fontsize=11,
+            ha="left",
+            va="top",
+            bbox={
+                "boxstyle": "round,pad=0.45",
+                "facecolor": "#080d15",
+                "edgecolor": "none",
+                "alpha": 0.82,
+            },
+            zorder=10,
+        )
+        state_text = ax.text(
+            0.018,
+            0.045,
+            "IN DOMAIN  0 t    •    PEAK  0",
+            transform=ax.transAxes,
+            color="#f4f8fb",
+            fontsize=10,
+            ha="left",
+            va="bottom",
+            bbox={
+                "boxstyle": "round,pad=0.45",
+                "facecolor": "#080d15",
+                "edgecolor": "none",
+                "alpha": 0.82,
+            },
+            zorder=10,
+        )
+        ax.plot(
+            [0.02, 0.98],
+            [0.018, 0.018],
+            transform=ax.transAxes,
+            color="#516170",
+            linewidth=2.2,
+            solid_capstyle="round",
+            zorder=10,
+        )
+        (progress,) = ax.plot(
+            [0.02, 0.02],
+            [0.018, 0.018],
+            transform=ax.transAxes,
+            color="#7dddf5",
+            linewidth=2.8,
+            solid_capstyle="round",
+            zorder=11,
+        )
+        quiver_key = ax.quiverkey(
+            quiver,
+            0.91,
+            0.053,
+            10,
+            "10 m s⁻¹",
+            labelpos="E",
+            color="#7dddf5",
+            labelcolor="#dce7f2",
+            coordinates="axes",
+        )
+        title = time_text
+        subtitle = fig.text(
+            0.5,
+            0.022,
+            footer,
+            color="#8799aa",
+            ha="center",
+            fontsize=8,
+        )
+        fig.subplots_adjust(left=0.025, right=0.91, bottom=0.07, top=0.875)
+    else:
+        title = ax.set_title(
+            f"{title_prefix} — {times[0]:%Y-%m-%d %H:%M} UTC\n"
+            f"{dx / 1000:.0f} km grid · 0.0 metric tons in domain"
+        )
+        subtitle = fig.text(
+            0.5,
+            0.015,
+            footer,
+            ha="center",
+            fontsize=8,
+        )
 
     def draw(frame_index: int) -> tuple:
         position = positions[frame_index]
@@ -211,19 +320,31 @@ def _animate(
         stamp = times[lower] + timedelta(
             seconds=weight * (times[upper] - times[lower]).total_seconds()
         )
-        mesh.set_array(np.maximum(field, floor).ravel())
+        plotted = np.ma.masked_less_equal(field, 0.0) if presentation else np.maximum(field, floor)
+        mesh.set_array(plotted.ravel())
         quiver.set_UVC(
             wind_u[::arrow_stride, ::arrow_stride],
             wind_v[::arrow_stride, ::arrow_stride],
         )
         metric_tons = column_mass.sum() / 1000.0
+        if presentation:
+            title.set_text(f"MET  {stamp:%d %b %Y  ·  %H:%M UTC}".upper())
+            peak = float(np.max(field))
+            peak_units = "ppbv" if quantity == "ground" else "kg km⁻²"
+            state_text.set_text(
+                f"IN DOMAIN  {metric_tons:,.0f} t    •    PEAK  {peak:,.1f} {peak_units}"
+            )
+            fraction = frame_index / max(len(positions) - 1, 1)
+            progress.set_xdata([0.02, 0.02 + 0.96 * fraction])
+            return mesh, quiver, title, state_text, progress, quiver_key, subtitle
         title.set_text(
             f"{title_prefix} — {stamp:%Y-%m-%d %H:%M} UTC\n"
             f"{dx / 1000:.0f} km grid · {metric_tons:.1f} metric tons in domain"
         )
         return mesh, quiver, title, subtitle
 
-    fig.tight_layout(rect=(0.0, 0.035, 1.0, 0.96))
+    if not presentation:
+        fig.tight_layout(rect=(0.0, 0.035, 1.0, 0.96))
     images: list[Image.Image] = []
     for frame_index in range(len(positions)):
         draw(frame_index)

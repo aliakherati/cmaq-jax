@@ -28,12 +28,112 @@ from make_visualizations import (
     _cell_edges,
     _map_axes,
     _plume_scale,
+    _positive_scale,
     _read_diagnostics,
 )
 
 HERE = Path(__file__).resolve().parent
 DEFAULT_BOUNDARIES = CONUS404 / "data" / "boundaries.npz"
 DEFAULT_FIGURES = HERE / "figures"
+
+
+def _ground_snapshot(
+    *,
+    output: Path,
+    frames: np.ndarray,
+    times: list,
+    lon: np.ndarray,
+    lat: np.ndarray,
+    dx: float,
+    boundaries: Path,
+) -> None:
+    floor, ceiling = _positive_scale(frames)
+    figure_color = "#080d15"
+    map_color = "#101923"
+    cmap = plt.get_cmap("magma").copy()
+    cmap.set_bad(map_color)
+    fig, ax = plt.subplots(figsize=(9.6, 7.0), facecolor=figure_color)
+    mesh = ax.pcolormesh(
+        _cell_edges(lon),
+        _cell_edges(lat),
+        np.ma.masked_less_equal(frames[-1], 0.0),
+        shading="flat",
+        cmap=cmap,
+        norm=LogNorm(vmin=floor, vmax=ceiling),
+    )
+    _map_axes(ax, lon, lat, boundaries)
+    ax.set_facecolor(map_color)
+    ax.set_axis_off()
+    colorbar = fig.colorbar(mesh, ax=ax, pad=0.02)
+    for spine in colorbar.ax.spines.values():
+        spine.set_edgecolor("#718096")
+    colorbar.ax.tick_params(colors="#dce7f2", labelsize=9)
+    colorbar.set_label(
+        "lowest-layer CO enhancement (ppbv)", color="#dce7f2", labelpad=12
+    )
+    fig.text(
+        0.055,
+        0.952,
+        "EPA projected-2023 CO — lowest MCIP layer",
+        color="#f4f8fb",
+        fontsize=19,
+        ha="left",
+        va="top",
+    )
+    fig.text(
+        0.055,
+        0.913,
+        f"EPA 2016v3 2023gf emissions  •  {dx / 1000:.0f} km  •  35 layers  •  CMAQ/JAX",
+        color="#9fb2c5",
+        fontsize=9,
+        ha="left",
+        va="top",
+    )
+    ax.text(
+        0.018,
+        0.965,
+        f"MET  {times[-1]:%d %b %Y  ·  %H:%M UTC}".upper(),
+        transform=ax.transAxes,
+        color="#f4f8fb",
+        fontsize=11,
+        ha="left",
+        va="top",
+        bbox={
+            "boxstyle": "round,pad=0.45",
+            "facecolor": figure_color,
+            "edgecolor": "none",
+            "alpha": 0.82,
+        },
+        zorder=10,
+    )
+    ax.text(
+        0.018,
+        0.035,
+        f"FINAL PEAK  {frames[-1].max():,.1f} ppbv",
+        transform=ax.transAxes,
+        color="#f4f8fb",
+        fontsize=10,
+        ha="left",
+        va="bottom",
+        bbox={
+            "boxstyle": "round,pad=0.45",
+            "facecolor": figure_color,
+            "edgecolor": "none",
+            "alpha": 0.82,
+        },
+        zorder=10,
+    )
+    fig.text(
+        0.5,
+        0.022,
+        "2016 MCIP winds · inert enhancement · no background, chemistry, deposition, or turbulence",
+        color="#8799aa",
+        ha="center",
+        fontsize=8,
+    )
+    fig.subplots_adjust(left=0.025, right=0.91, bottom=0.07, top=0.875)
+    fig.savefig(output, dpi=150)
+    plt.close(fig)
 
 
 def _summary(
@@ -166,6 +266,7 @@ def main() -> int:
     stem = args.run.stem
     column_gif = args.output_dir / f"{stem}.gif"
     ground_gif = args.output_dir / f"{stem}_ground_level.gif"
+    ground_png = args.output_dir / f"{stem}_ground_level.png"
     summary = args.output_dir / f"{stem}_summary.png"
     footer = (
         "EPA projected-2023 merged emissions · 2016 MCIP winds · CMAQ HADV + ZADV · "
@@ -190,6 +291,7 @@ def main() -> int:
         quantity="column",
         title_override="EPA projected-2023 CO enhancement",
         footer_override=footer,
+        presentation=True,
     )
     print(f"rendering {ground_gif}")
     _animate(
@@ -209,6 +311,17 @@ def main() -> int:
         quantity="ground",
         title_override="EPA projected-2023 CO — lowest MCIP layer",
         footer_override=footer,
+        presentation=True,
+    )
+    print(f"rendering {ground_png}")
+    _ground_snapshot(
+        output=ground_png,
+        frames=surface,
+        times=times,
+        lon=longitude,
+        lat=latitude,
+        dx=dx,
+        boundaries=args.boundaries,
     )
     print(f"rendering {summary}")
     _summary(
@@ -222,7 +335,7 @@ def main() -> int:
         boundaries=args.boundaries,
         diagnostics=diagnostics,
     )
-    print(f"wrote {column_gif}, {ground_gif}, and {summary}")
+    print(f"wrote {column_gif}, {ground_gif}, {ground_png}, and {summary}")
     return 0
 
 

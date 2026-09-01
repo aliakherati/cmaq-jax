@@ -49,6 +49,15 @@ diagnostics, `rhoJ` closure, vertical-centroid diagnostics, static summaries,
 and animated plume GIFs.  The older five-level NARR example remains a visual
 smoke test and is not used as physical validation.
 
+## Full-CONUS projected-2023 validation
+
+[`examples/epa_2023/`](examples/epa_2023/README.md) runs a 24-hour inert-CO
+case on EPA's complete 459 × 299 cell `12US1` domain at 12 km.  It combines all
+CO in the platform's final hourly merged gridded file with matching real MCIP
+meteorology on 35 layers, saves exact 15-minute states, and produces polished
+column and lowest-layer GIFs.  EPA's `2023gf` label denotes projected-2023
+emissions evaluated with 2016 meteorology; the example keeps both dates visible.
+
 ## Install
 
 ```bash
@@ -75,7 +84,7 @@ Requires Python ≥ 3.11. Regenerating Fortran goldens additionally needs
 | `cmaq_jax.vadv` | column solve, flux-matching velocity adjustment, flux diagnosis, CFL sub-stepping | A2.1–A2.4 | alpha |
 | `cmaq_jax.advstep` | CFL and divergence limits → sync step + per-layer `ASTEP` | A3.1 | alpha |
 | `cmaq_jax.api` | `advect_step` — HADV then ZADV, jittable and differentiable | A3.2 | alpha |
-| `cmaq_jax.io_mcip` | MCIP/IOAPI meteorology reader | A3.5 | ✅ tested on synthetic IOAPI; unverified against real MCIP output |
+| `cmaq_jax.io_mcip` | MCIP/IOAPI meteorology reader | A3.5 | ✅ tested on synthetic IOAPI and EPA 12US1 MCIP output |
 | `cmaq_jax.hdiff` | Horizontal diffusion: deformation, eddy diffusivity, driver | B0–B2 | ✅ matches `deform.F`/`hcdiff3d.F`/`hdiff.F` |
 | `cmaq_jax.vdiff` | ACM2 vertical diffusion: solvers, `Kz`, driver | C0–C2 | ✅ matches `tri.F`/`matrix1.F`/`eddyx.F`/`vdiffacmx.F` |
 | `cmaq_jax.bench` | CPU/GPU timing at benchmark resolution | A3.6 | alpha |
