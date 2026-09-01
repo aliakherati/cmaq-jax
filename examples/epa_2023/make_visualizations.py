@@ -37,6 +37,15 @@ DEFAULT_BOUNDARIES = CONUS404 / "data" / "boundaries.npz"
 DEFAULT_FIGURES = HERE / "figures"
 
 
+def _format_time_axis(ax: plt.Axes, times: np.ndarray) -> None:
+    duration_hours = (times[-1] - times[0]).total_seconds() / 3600.0
+    if duration_hours > 48.0:
+        ax.xaxis.set_major_locator(mdates.DayLocator())
+        ax.xaxis.set_major_formatter(mdates.DateFormatter("%b %d"))
+    else:
+        ax.xaxis.set_major_formatter(mdates.DateFormatter("%H:%M"))
+
+
 def _ground_snapshot(
     *,
     output: Path,
@@ -153,6 +162,12 @@ def _summary(
     positive = source_areal[source_areal > 0.0]
     source_floor = max(float(np.percentile(positive, 1.0)), float(positive.max()) / 10_000.0)
     times = diagnostics["time_utc"]
+    duration_hours = round((times[-1] - times[0]).total_seconds() / 3600.0)
+    duration_label = (
+        f"{duration_hours // 24} days"
+        if duration_hours % 24 == 0
+        else f"{duration_hours} hours"
+    )
 
     fig, axes = plt.subplots(2, 2, figsize=(14.0, 9.5))
     source_ax, plume_ax, mass_ax, closure_ax = axes.ravel()
@@ -168,8 +183,8 @@ def _summary(
         norm=LogNorm(vmin=source_floor, vmax=float(positive.max())),
     )
     _map_axes(source_ax, lon, lat, boundaries)
-    source_ax.set_title("EPA 2023gf merged CO emitted over 24 hours")
-    fig.colorbar(source_mesh, ax=source_ax, label="kg CO km⁻² day⁻¹", pad=0.02)
+    source_ax.set_title(f"EPA 2023gf merged CO emitted over {duration_label}")
+    fig.colorbar(source_mesh, ax=source_ax, label="kg CO km⁻² over period", pad=0.02)
 
     plume_mesh = plume_ax.pcolormesh(
         lon_edges,
@@ -193,7 +208,7 @@ def _summary(
     mass_ax.set_title("CO mass budget")
     mass_ax.set_ylabel("metric tons CO")
     mass_ax.set_xlabel("2016 meteorological time (UTC)")
-    mass_ax.xaxis.set_major_formatter(mdates.DateFormatter("%H:%M"))
+    _format_time_axis(mass_ax, times)
     mass_ax.legend(frameon=False)
     mass_ax.grid(alpha=0.25)
 
@@ -207,7 +222,7 @@ def _summary(
     closure_ax.set_yscale("log")
     closure_ax.set_ylabel("dimensionless")
     closure_ax.set_xlabel("2016 meteorological time (UTC)")
-    closure_ax.xaxis.set_major_formatter(mdates.DateFormatter("%H:%M"))
+    _format_time_axis(closure_ax, times)
     closure_ax.grid(alpha=0.25)
     centroid_ax = closure_ax.twinx()
     centroid_ax.plot(
@@ -225,7 +240,8 @@ def _summary(
     negative_mass = float(np.max(diagnostics["negative_tracer_mass_kg"]))
     fig.suptitle(
         "Full-CONUS 12 km inert CO transport\n"
-        "EPA 2016v3 projected-2023 emissions · July 15, 2016 MCIP meteorology\n"
+        f"EPA 2016v3 projected-2023 emissions · {times[0]:%b %d}–"
+        f"{times[-1]:%b %d, %Y} MCIP meteorology\n"
         f"minimum tracer {min_tracer:.2e}; maximum negative mass {negative_mass:.2e} kg",
         fontsize=13,
     )

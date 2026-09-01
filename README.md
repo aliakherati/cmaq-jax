@@ -51,10 +51,11 @@ smoke test and is not used as physical validation.
 
 ## Full-CONUS projected-2023 validation
 
-[`examples/epa_2023/`](examples/epa_2023/README.md) runs a 24-hour inert-CO
-case on EPA's complete 459 × 299 cell `12US1` domain at 12 km.  It combines all
-CO in the platform's final hourly merged gridded file with matching real MCIP
-meteorology on 35 layers, saves exact 15-minute states, and produces polished
+[`examples/epa_2023/`](examples/epa_2023/README.md) runs continuous inert-CO
+transport on EPA's complete 459 × 299 cell `12US1` domain at 12 km.  The
+completed seven-day case combines all CO in the platform's final hourly merged
+gridded files with matching real MCIP meteorology on 35 layers, carries state
+across daily files, saves 337 exact half-hour states, and produces polished
 column and lowest-layer GIFs.  EPA's `2023gf` label denotes projected-2023
 emissions evaluated with 2016 meteorology; the example keeps both dates visible.
 

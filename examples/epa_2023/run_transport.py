@@ -334,6 +334,16 @@ def main() -> int:
                     raise ValueError(
                         f"MCIP density is discontinuous at {times[0]}: max |Δ|={difference}"
                     )
+                for name, daily, previous in (
+                    ("U", day_u0, u0),
+                    ("V", day_v0, v0),
+                ):
+                    if not np.allclose(daily, previous, rtol=2.0e-6, atol=1.0e-6):
+                        difference = float(np.max(np.abs(daily - previous)))
+                        raise ValueError(
+                            f"MCIP {name} is discontinuous at {times[0]}: "
+                            f"max |Δ|={difference}"
+                        )
                 u0, v0, rho0 = day_u0, day_v0, day_rho0
 
             assert cfg is not None and ds is not None and sync_layers is not None

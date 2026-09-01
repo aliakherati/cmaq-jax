@@ -66,6 +66,7 @@ def _download(source: str, target: Path) -> None:
             "s3",
             "cp",
             "--no-sign-request",
+            "--no-progress",
             "--region",
             "us-east-1",
             source,
