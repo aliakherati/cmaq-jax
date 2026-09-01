@@ -66,6 +66,29 @@ def _map_axes(ax: plt.Axes, lon: np.ndarray, lat: np.ndarray, boundaries: Path) 
     ax.set_facecolor("#202020")
 
 
+def _cell_edges(centres: np.ndarray) -> np.ndarray:
+    """Approximate 2-D cell corners from curvilinear cell centres."""
+    values = np.asarray(centres, dtype=np.float64)
+    if values.ndim != 2 or min(values.shape) < 2:
+        raise ValueError(f"cell centres must be a 2-D field at least 2x2, got {values.shape}")
+    extended = np.empty((values.shape[0] + 2, values.shape[1] + 2), dtype=np.float64)
+    extended[1:-1, 1:-1] = values
+    extended[0, 1:-1] = 2.0 * values[0] - values[1]
+    extended[-1, 1:-1] = 2.0 * values[-1] - values[-2]
+    extended[1:-1, 0] = 2.0 * values[:, 0] - values[:, 1]
+    extended[1:-1, -1] = 2.0 * values[:, -1] - values[:, -2]
+    extended[0, 0] = 2.0 * extended[1, 0] - extended[2, 0]
+    extended[0, -1] = 2.0 * extended[1, -1] - extended[2, -1]
+    extended[-1, 0] = 2.0 * extended[-2, 0] - extended[-3, 0]
+    extended[-1, -1] = 2.0 * extended[-2, -1] - extended[-3, -1]
+    return 0.25 * (
+        extended[:-1, :-1]
+        + extended[1:, :-1]
+        + extended[:-1, 1:]
+        + extended[1:, 1:]
+    )
+
+
 def _read_diagnostics(path: Path) -> dict[str, np.ndarray]:
     with path.open(newline="") as stream:
         rows = list(csv.DictReader(stream))
@@ -109,6 +132,8 @@ def _animate(
     interpolation: int,
     fps: int,
     quantity: str,
+    title_override: str | None = None,
+    footer_override: str | None = None,
 ) -> None:
     if quantity == "column":
         display, floor, ceiling = _plume_scale(frames, dx * dy / 1.0e6)
@@ -129,15 +154,19 @@ def _animate(
         )
     else:  # pragma: no cover - internal call contract
         raise ValueError(f"unknown animation quantity {quantity!r}")
+    title_prefix = title_override or title_prefix
+    footer = footer_override or footer
     positions = np.linspace(0.0, len(times) - 1, (len(times) - 1) * interpolation + 1)
     arrow_stride = max(1, min(lon.shape) // 18)
+    lon_edges = _cell_edges(lon)
+    lat_edges = _cell_edges(lat)
 
     fig, ax = plt.subplots(figsize=(8.2, 7.6))
     mesh = ax.pcolormesh(
-        lon,
-        lat,
+        lon_edges,
+        lat_edges,
         np.maximum(display[0], floor),
-        shading="nearest",
+        shading="flat",
         cmap="inferno",
         norm=LogNorm(vmin=floor, vmax=ceiling),
     )
@@ -156,7 +185,7 @@ def _animate(
     colorbar = fig.colorbar(mesh, ax=ax, pad=0.02)
     colorbar.set_label(colorbar_label)
     title = ax.set_title(
-        f"{title_prefix} — 2018-07-26 00:00 UTC\n"
+        f"{title_prefix} — {times[0]:%Y-%m-%d %H:%M} UTC\n"
         f"{dx / 1000:.0f} km grid · 0.0 metric tons in domain"
     )
     subtitle = fig.text(
@@ -234,12 +263,14 @@ def _summary(
 
     fig, axes = plt.subplots(2, 2, figsize=(14.0, 10.4))
     source_ax, plume_ax, mass_ax, closure_ax = axes.ravel()
+    lon_edges = _cell_edges(lon)
+    lat_edges = _cell_edges(lat)
 
     source_mesh = source_ax.pcolormesh(
-        lon,
-        lat,
+        lon_edges,
+        lat_edges,
         np.ma.masked_less_equal(source_areal, 0.0),
-        shading="nearest",
+        shading="flat",
         cmap="viridis",
         norm=LogNorm(vmin=source_floor, vmax=float(source_positive.max())),
     )
@@ -248,10 +279,10 @@ def _summary(
     fig.colorbar(source_mesh, ax=source_ax, label="kg CO km⁻² day⁻¹", pad=0.02)
 
     plume_mesh = plume_ax.pcolormesh(
-        lon,
-        lat,
+        lon_edges,
+        lat_edges,
         np.maximum(areal[-1], floor),
-        shading="nearest",
+        shading="flat",
         cmap="inferno",
         norm=LogNorm(vmin=floor, vmax=ceiling),
     )
