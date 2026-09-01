@@ -68,23 +68,6 @@ there, not here.
 
 - [`plans/PLAN-advection.md`](plans/PLAN-advection.md) — `A0.1` … `A3.7`.
 - [`plans/PLAN-hdiff.md`](plans/PLAN-hdiff.md) — `B0.1` … `B2.5`.
-
-`cmaq_jax.api.transport_step` now runs HADV → ZADV → HDIFF under one `jit`.
-
-**Open verification gap:** `io_mcip` is tested against synthetic I/O API files,
-not real MCIP output. Closing it needs a `$CMAQ_DATA` download.
-
-**Two upstream findings**, both reproduced rather than corrected and both
-documented in [`plans/PLAN-hdiff.md`](plans/PLAN-hdiff.md): `hdiff.F`'s halo is
-frozen across sub-steps, making it a Dirichlet condition pinned at t=0 rather
-than the no-flux condition it is described as; and its diffusion sub-step
-(`CFC = 0.300`) sits past the explicit-scheme stability limit of 0.25 whenever
-sub-stepping engages. Neither affects CMAQ's benchmark configurations.
-
-## Completed
-
-- [`plans/PLAN-advection.md`](plans/PLAN-advection.md) — `A0.1` … `A3.7`.
-- [`plans/PLAN-hdiff.md`](plans/PLAN-hdiff.md) — `B0.1` … `B2.5`.
 - [`plans/PLAN-vdiff.md`](plans/PLAN-vdiff.md) — `C0.1` … `C3.4`.
 
 `cmaq_jax.api.science_step` runs VDIFF → HADV → ZADV → HDIFF, in `sciproc.F`'s

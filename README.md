@@ -17,9 +17,11 @@ Multiscale Air Quality model.
 
 ## Status
 
-**Phase A0 complete.** The two 1-D PPM kernels are ported and validated against
-the CMAQ Fortran; the golden harness and property suite are in place. Next is
-A1 (horizontal advection: boundary conditions, contravariant velocity, sweeps).
+**Phases A–C complete.** Advection (`A0`–`A3`), horizontal diffusion (`B0`–`B2`)
+and ACM2 vertical diffusion (`C0`–`C3`) are ported, each matched against
+unmodified CMAQ Fortran in both precisions. `cmaq_jax.api.science_step` runs
+VDIFF → HADV → ZADV → HDIFF in `sciproc.F`'s order, under one `jit` and
+differentiable. Next is gas chemistry, in a separate `saprc-jax` repo.
 
 Agreement with CMAQ, after downcasting to float32: the uniform-spacing sweep
 matches `hppm.F` to a worst case of 1.7 float32 ULPs across ten cases, three of
@@ -46,8 +48,9 @@ MPAS grids, nested grids. See [`docs/ULTRAPLAN.md`](docs/ULTRAPLAN.md).
 pair over California with native 4 km, 50-layer CONUS404 meteorology and daily
 FINN fire CO.  It includes conservative 8 km comparison, positivity and mass
 diagnostics, `rhoJ` closure, vertical-centroid diagnostics, static summaries,
-and animated plume GIFs.  The older five-level NARR example remains a visual
-smoke test and is not used as physical validation.
+and animated plume GIFs.  The older five-level NARR example,
+[`examples/california/`](examples/california/README.md), remains a visual smoke
+test and is not used as physical validation.
 
 ## Full-CONUS projected-2023 validation
 
