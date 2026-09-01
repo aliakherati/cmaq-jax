@@ -96,6 +96,24 @@ and diagnostic outputs:
 
 Change both `24h` strings to `168h` to render the seven-day result.
 
+For the square satellite presentation, download the 1.6 MB July
+[NASA Blue Marble](https://eoimages.gsfc.nasa.gov/images/imagerecords/74000/74393/readme.pdf)
+basemap and pinned 1:50m [Natural Earth](https://www.naturalearthdata.com/downloads/50m-raster-data/50m-natural-earth-1/)
+coast, country, and state/province lines, then render only that product:
+
+```bash
+.venv/bin/python examples/epa_2023/download_basemap.py
+.venv/bin/python examples/epa_2023/make_visualizations.py \
+    --run examples/epa_2023/output/transport_2023gf_20160715_168h_12km.npz \
+    --satellite-only --fps 12
+```
+
+The renderer warps the land and ocean image into the EPA grid's native Lambert
+conformal projection.  It uses one fixed logarithmic scale for the entire week
+and a shared GIF palette so the photographic background compresses efficiently
+without flicker.  Add `--satellite-preview-frame 168` to render a single exact
+model frame before committing to the full animation.
+
 Downloaded inputs and numeric results are git-ignored.  The regenerable GIFs
 and PNGs under `figures/` are committed.
 
@@ -171,6 +189,16 @@ and should be revisited when the float32 vertical solver is tightened.  The
 residual remained bounded and no negative or non-finite tracer appeared.
 
 ## Figures
+
+![Final frame of the seven-day satellite-style CO transport](figures/transport_2023gf_20160715_168h_12km_satellite.png)
+
+- [`transport_2023gf_20160715_168h_12km_satellite.gif`](figures/transport_2023gf_20160715_168h_12km_satellite.gif)
+  is the WeatherBug-inspired presentation: 337 exact half-hour model states at
+  12 fps (27 seconds), with a continuous NASA land/ocean basemap, complete
+  North American boundaries, a cream-to-maroon column-CO layer, and bright red
+  squares at the top 0.1% of positive cumulative gridded CO source cells.  The
+  squares are **not detected fires**, and the transported field is inert CO
+  enhancement rather than satellite-observed smoke.
 
 ![Projected-2023 full-CONUS seven-day transport summary](figures/transport_2023gf_20160715_168h_12km_summary.png)
 

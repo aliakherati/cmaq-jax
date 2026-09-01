@@ -374,9 +374,7 @@ def _satellite_animation(  # noqa: PLR0915
     )
     fig.subplots_adjust(left=0.0, right=1.0, bottom=0.0, top=1.0)
 
-    images: list[Image.Image] = []
-    snapshot_image: Image.Image | None = None
-    for render_index, position in enumerate(positions):
+    def render(position: float) -> Image.Image:
         lower = min(int(np.floor(position)), len(times) - 1)
         upper = min(lower + 1, len(times) - 1)
         weight = position - lower
@@ -399,11 +397,24 @@ def _satellite_animation(  # noqa: PLR0915
         buffer = io.BytesIO()
         fig.savefig(buffer, format="png", dpi=100, facecolor=fig.get_facecolor())
         buffer.seek(0)
-        frame = Image.open(buffer).convert("RGB")
+        return Image.open(buffer).convert("RGB")
+
+    images: list[Image.Image] = []
+    snapshot_image: Image.Image | None = None
+    palette = None
+    if output is not None:
+        representative = render(float(positions[len(positions) // 2]))
+        palette = representative.quantize(
+            colors=256,
+            method=Image.Quantize.MEDIANCUT,
+            dither=Image.Dither.NONE,
+        )
+    for render_index, position in enumerate(positions):
+        frame = render(float(position))
         if preview_frame is not None or render_index == len(positions) - 1:
             snapshot_image = frame.copy()
         if output is not None:
-            images.append(frame.convert("P", palette=Image.Palette.ADAPTIVE))
+            images.append(frame.quantize(palette=palette, dither=Image.Dither.NONE))
 
     if snapshot_image is None:  # pragma: no cover - positions is never empty
         raise RuntimeError("no satellite frame was rendered")
@@ -415,8 +426,8 @@ def _satellite_animation(  # noqa: PLR0915
             append_images=images[1:],
             duration=round(1000 / fps),
             loop=0,
-            disposal=2,
-            optimize=False,
+            disposal=1,
+            optimize=True,
         )
     plt.close(fig)
 
