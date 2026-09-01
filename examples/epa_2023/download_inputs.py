@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Download one EPA 2016v3 projected-2023 CONUS transport case.
+"""Download EPA 2016v3 projected-2023 CONUS transport inputs.
 
 EPA's ``2023gf`` case is an analytic 2023 emissions scenario evaluated with
 2016 meteorology.  This downloader deliberately keeps both dates visible: the
 default is projected-2023 emissions for the July 15, 2016 meteorological day.
 
-The four public files total about 12.1 GB.  Existing complete files are never
-downloaded again, and a failed transfer remains under a ``.part`` suffix.
+The four public files total about 12.1 GB per day.  Existing complete files are
+never downloaded again, and a failed transfer remains under a ``.part`` suffix.
 """
 
 from __future__ import annotations
@@ -14,7 +14,7 @@ from __future__ import annotations
 import argparse
 import shutil
 import subprocess
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 BUCKET = "s3://2016v3platform/2016v3platform"
@@ -42,6 +42,16 @@ def input_objects(met_date: date) -> dict[str, str]:
             f"emis_mole_all_{yyyymmdd}_12US1_withbeis_withrwc_2023gf_16j.ncf"
         ),
     }
+
+
+def period_objects(start: date, days: int) -> dict[str, str]:
+    """Public objects for consecutive daily files beginning at ``start``."""
+    if days < 1:
+        raise ValueError("days must be positive")
+    result: dict[str, str] = {}
+    for offset in range(days):
+        result.update(input_objects(start + timedelta(days=offset)))
+    return result
 
 
 def _download(source: str, target: Path) -> None:
@@ -73,8 +83,9 @@ def main() -> int:
         "--met-date",
         type=date.fromisoformat,
         default=DEFAULT_MET_DATE,
-        help="2016 meteorological/profile day used by EPA's projected-2023 case",
+        help="first 2016 meteorological/profile day used by EPA's projected-2023 case",
     )
+    parser.add_argument("--days", type=int, default=1, help="consecutive daily files")
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_DATA)
     parser.add_argument(
         "--only",
@@ -84,13 +95,15 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    if args.met_date.year != 2016:
+    if args.days < 1:
+        parser.error("--days must be positive")
+    if args.met_date.year != 2016 or (args.met_date + timedelta(days=args.days - 1)).year != 2016:
         parser.error("EPA's 2023gf platform is indexed by its 2016 meteorological dates")
     if shutil.which("aws") is None:
         parser.error("the AWS CLI is required (the public bucket needs no credentials)")
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
-    objects = input_objects(args.met_date)
+    objects = period_objects(args.met_date, args.days)
     for name, source in objects.items():
         is_emissions = name.startswith("emis_")
         if args.only == "meteorology" and is_emissions:
