@@ -23,3 +23,5 @@ reference/build/
 # Scratch
 .DS_Store
 scratch/
+examples/epa_2023/data/
+examples/epa_2023/output/
