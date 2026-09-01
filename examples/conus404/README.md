@@ -5,8 +5,8 @@ operators with real hourly CONUS404 meteorology and daily FINN fire CO.  It is a
 transport validation, not an air-quality forecast: CO is an inert enhancement
 tracer, and clean inflow means the run has no background CO.
 
-The existing `examples/california/` NARR animation remains a quick visual smoke
-test.  It has only five pressure levels, omits vertical advection, and resets
+The existing [`examples/california/`](../california/README.md) NARR animation
+remains a quick visual smoke test.  It has only five pressure levels, omits vertical advection, and resets
 atmospheric mass.  This experiment instead uses all 50 WRF layers and never
 resets density.
 
